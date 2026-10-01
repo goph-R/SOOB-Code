@@ -1,0 +1,8 @@
+# Build output
+*.o
+*.exe
+raw/obj/
+
+# Per-machine editor state
+codeedit.ini
+codeedit.log
