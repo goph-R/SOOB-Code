@@ -4,6 +4,11 @@ A small, fast code editor in the spirit of the mid-2000s Notepad++ — built
 with a patched FLTK 1.3 so that the same source runs on **Windows 98** (Dev-C++
 / GCC 3.4) and on Windows 10 / 11 (WinLibs MinGW).
 
+![SOOB Code Editor 1.0 on Windows 98](docs/screenshot-v1.png)
+
+*Version 1.0 on Windows 98: Markdown highlighting, tabs, Find / Replace and
+the status bar.*
+
 ## Features
 
 - Tabs, Find / Replace (Enter = Find Next), Go to line, undo / redo

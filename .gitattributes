@@ -6,3 +6,6 @@
 
 # Shell scripts -- always LF.
 *.sh       text eol=lf
+
+# Binary assets: never touch line endings.
+*.png      binary
