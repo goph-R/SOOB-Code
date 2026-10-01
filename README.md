@@ -25,7 +25,7 @@ the status bar.*
 ## Layout
 
 SOOB-Code is the application. The editor widget, the lexers, the tabs and the
-patched FLTK live in **SOOB-Core**, which must sit beside this folder:
+patched FLTK live in **[SOOB-Core](https://github.com/goph-R/SOOB-Core)**, which must sit beside this folder:
 
 ```
 Projects\
@@ -42,5 +42,5 @@ Projects\
 Probes: `c98.bat` (the CodeEditor widget alone) and `f98.bat` (the Win98 file
 dialog / directory listing).
 
-See `SOOB-Core/docs/editor-fltk-win98.md` for the FLTK recipe and every local
+See [`SOOB-Core/docs/editor-fltk-win98.md`](https://github.com/goph-R/SOOB-Core/blob/main/docs/editor-fltk-win98.md) for the FLTK recipe and every local
 FLTK patch.
