@@ -24,11 +24,12 @@ set DC=C:\Dev-Cpp\bin
 if not exist raw\nul mkdir raw
 if not exist raw\obj\nul mkdir raw\obj
 
+REM ---- -mwindows on the link: a GUI program, no console window.
 REM ---- -I%ENGINE% resolves the shared widgets ("fltk_ui/edit_code.h"),
 REM ---- -I%FLTK% resolves <FL/...>.
 %DC%\g++.exe -DWIN32 -DWINVER=0x0500 -D_WIN32_WINNT=0x0500 -I. -I%ENGINE% -I%FLTK% -O2 -c codeedit.cpp -o raw\obj\e98.o
 if errorlevel 1 goto error
-%DC%\g++.exe raw\obj\e98.o -o codeedit.exe -L%FLTK%\lib -lfltk -lole32 -luuid -lcomctl32 -lcomdlg32 -lgdi32 -lwsock32
+%DC%\g++.exe raw\obj\e98.o -mwindows -o codeedit.exe -L%FLTK%\lib -lfltk -lole32 -luuid -lcomctl32 -lcomdlg32 -lgdi32 -lwsock32
 if errorlevel 1 goto error
 
 echo.
