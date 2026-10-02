@@ -16,6 +16,8 @@ the status bar.*
   JavaScript, Lua, Markdown (with fenced code), Pascal, PHP (HTML templates
   with `<?php ?>` blocks), Python, SQL
 - Auto-indent, Tab / Shift+Tab block indent, `}` re-indents to its `{`
+- Matching pairs: the bracket at the caret and its partner ( ) [ ] { } are
+  outlined (red if unmatched), and in HTML / PHP both names of an element
 - Encodings: UTF-8, UTF-8 with BOM, ANSI (system code page) — detected on
   open, kept on save; CRLF / LF kept too
 - Status bar (Ln/Col, language, line ending, encoding), recent files,

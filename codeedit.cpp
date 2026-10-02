@@ -51,7 +51,7 @@
 /* Bump on a feature change. The __DATE__/__TIME__ stamp beside it is the one
  * that cannot lie: the compiler writes it, so a title showing an old timestamp
  * means the running exe is not the one you just built. */
-#define CODEEDIT_VERSION "1.0"
+#define CODEEDIT_VERSION "1.1"
 
 #define MAX_DOCS   16
 #define MENU_H     25
