@@ -113,6 +113,22 @@ without testing by hand on Win98.
       Word's 7/10). A dummy item would cost a full 19px row and land no
       closer.
 
+## Done in 1.9
+
+- [x] Win98-sized arrows. FLTK draws both of its arrow glyphs bigger than
+      Windows 98 does: the scrollbar's is 9x5 in a 16px bar where PuTTY's
+      on the same screen is 7x4, and the submenu arrow had just gone from
+      4x7 to 5x9 because FLTK sizes it off the ROW height and 1.8 took the
+      rows to 19px. Two one-line patches to the vendored FLTK, written up
+      in `../SOOB-Core/docs/editor-fltk-win98.md`: the scrollbar divides by
+      4 instead of 3, and the submenu arrow comes off the menu FONT (as
+      Marlett does on Windows) instead of the row, so it stays 4x7 however
+      tall the rows get.
+
+      This one needs `fltk98` before `e98` -- but only two objects:
+      `Fl_Scrollbar.o`, `Fl_Menu.o` and `fltkok.tag` out of
+      `vendor\fltk-1.3\FL\lib`.
+
 ## Ideas not asked for yet
 - ```bash / ```bat fenced blocks in Markdown. NOT free: it would push
   `LEX_MD_NSUB` to 13 and the fence carry states into `LS_CF_BLOCK`, so
