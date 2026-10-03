@@ -54,7 +54,7 @@
 /* Bump on a feature change. The __DATE__/__TIME__ stamp beside it is the one
  * that cannot lie: the compiler writes it, so a title showing an old timestamp
  * means the running exe is not the one you just built. */
-#define CODEEDIT_VERSION "1.3"
+#define CODEEDIT_VERSION "1.4"
 
 #define MAX_DOCS   16
 #define MENU_H     25
@@ -734,6 +734,8 @@ static const char *langName(int lang)
     case LEX_LANG_HTML:     return "HTML";
     case LEX_LANG_PHP:      return "PHP";
     case LEX_LANG_SQL:      return "SQL";
+    case LEX_LANG_BASH:     return "Bash";
+    case LEX_LANG_BAT:      return "Batch";
     default:                return "Plain text";
     }
 }
@@ -1062,6 +1064,8 @@ static Fl_Menu_Item gMenu[] = {
         { 0 },
     { "&Language", 0, 0, 0, FL_SUBMENU },
         { "Plain text", 0, cbLang, (void *)LEX_LANG_TEXT, FL_MENU_DIVIDER },
+        { "Bash",       0, cbLang, (void *)LEX_LANG_BASH },
+        { "Batch",      0, cbLang, (void *)LEX_LANG_BAT },
         { "C / C++",    0, cbLang, (void *)LEX_LANG_C },
         { "CSS",        0, cbLang, (void *)LEX_LANG_CSS },
         { "HTML",       0, cbLang, (void *)LEX_LANG_HTML },

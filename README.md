@@ -12,10 +12,13 @@ the status bar.*
 ## Features
 
 - Tabs, Find / Replace (Enter = Find Next), Go to line, undo / redo
-- Syntax highlighting: C / C++, CSS, HTML (with `<script>` / `<style>`), Java,
-  JavaScript, Lua, Markdown (with fenced code), Pascal, PHP (HTML templates
-  with `<?php ?>` blocks), Python, SQL
-- Auto-indent, Tab / Shift+Tab block indent, `}` re-indents to its `{`
+- Syntax highlighting: Bash / sh, Batch (`.bat` / `.cmd`), C / C++, CSS,
+  HTML (with `<script>` / `<style>`), Java, JavaScript, Lua, Markdown (with
+  fenced code), Pascal, PHP (HTML templates with `<?php ?>` blocks), Python,
+  SQL
+- Auto-indent, Tab / Shift+Tab block indent; `}` `]` `)` re-indent to their
+  opener, and in Lua so do `end` / `until` / `else`
+- Smart Home, centre-on-find, re-indent on paste
 - Matching pairs: the bracket at the caret and its partner ( ) [ ] { } are
   outlined (red if unmatched), and in HTML / PHP both names of an element
 - Encodings: UTF-8, UTF-8 with BOM, ANSI (system code page) — detected on

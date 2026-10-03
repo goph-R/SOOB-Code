@@ -1,7 +1,7 @@
 # Feature requests
 
 All of the original list is implemented. 1.2 is the app chrome, 1.3 the
-editing behaviour.
+editing behaviour, 1.4 adds two languages.
 
 ## Done in 1.2
 
@@ -29,6 +29,20 @@ The indent rules live in SOOB-Core `fltk_ui/edit_indent.h` as buffer-only
 functions and are covered by `tools/test_linux.sh`, so they can be changed
 without testing by hand on Win98.
 
+## Done in 1.4
+
+- [x] .bat and .sh support (Batch, Bash)
+      Bash is a `LexCf` config + a new `shell` flag; Batch needed its own
+      lexer (`rem` / `::` comments, `%VAR%`, `:label`). Neither costs a
+      carry state.
+
 ## Ideas not asked for yet
 
 - Pascal `begin` / `end` block indent: one row in `codeBlockWordTable`
+- ```bash / ```bat fenced blocks in Markdown. NOT free: it would push
+  `LEX_MD_NSUB` to 13 and the fence carry states into `LS_CF_BLOCK`, so
+  every `LS_CF_*` would have to shift up and `LS_MAX` would land on 62 --
+  exactly the ceiling, with no headroom left.
+- Bash heredocs (`<<EOF`): the body is currently lexed as code. Needs a
+  carry state plus the delimiter, so it is the one shell feature that is
+  not cheap.
