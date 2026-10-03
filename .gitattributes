@@ -9,3 +9,20 @@
 
 # Binary assets: never touch line endings.
 *.png      binary
+
+# C / C++ sources and docs: CRLF in the working tree. Win98 and DOS are the
+# supported editing environment -- Notepad, Dev-C++ and SOOB-Code itself all
+# write CRLF -- so that is what these files should BE on disk. Git still
+# stores them with LF, so a file saved on 98 does not read as a whole-file
+# diff. Same policy as SOOB-Core's .gitattributes.
+*.c        text eol=crlf
+*.cc       text eol=crlf
+*.cpp      text eol=crlf
+*.cxx      text eol=crlf
+*.h        text eol=crlf
+*.hh       text eol=crlf
+*.hpp      text eol=crlf
+*.hxx      text eol=crlf
+*.lua      text eol=crlf
+*.md       text eol=crlf
+*.ini      text eol=crlf
