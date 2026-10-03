@@ -36,6 +36,14 @@ without testing by hand on Win98.
       lexer (`rem` / `::` comments, `%VAR%`, `:label`). Neither costs a
       carry state.
 
+## Fixed
+
+- [x] Changing the word wrap marked the file as modified. Any OK in the
+      Settings dialog did it, to every open document: Fl_Text_Buffer's
+      tab_distance() reports a whole-buffer edit so displays re-layout, and
+      it fires even when the value has not changed. It also pushed a junk
+      undo step. SOOB-Core edit_code.h.
+
 ## Ideas not asked for yet
 
 - Pascal `begin` / `end` block indent: one row in `codeBlockWordTable`
