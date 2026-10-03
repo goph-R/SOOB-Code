@@ -13,6 +13,7 @@ editing behaviour, 1.4 adds two languages.
       modal dialogs instead of `fl_input`)
 - [x] `Go to line` input value should be selected in default
 - [x] IE5 menu style: 1px dark gray + white groove top and bottom, 11px font
+      (superseded in 1.7 -- the Office 97 look was what was wanted)
 
 ## Done in 1.3
 
@@ -72,6 +73,23 @@ without testing by hand on Win98.
       JSON is its own lexer for one reason worth having: a quoted string
       followed by `:` is a KEY and gets its own colour. An unquoted key is
       flagged as an error, since in strict JSON it is one.
+
+## Done in 1.7
+
+- [x] Office 97 menu style, replacing the IE5 one: the band ruled 1px white
+      at the top and dark gray at the bottom, the open title pushed in with
+      a 1px sunken border on plain button face, drop-downs in a 3D button
+      frame, items highlighting solid blue.
+
+      The whole job is working around menuwindow taking its frame from the
+      BAR's boxtype -- which is why the old custom bar box leaked into the
+      popups and ruled them top and bottom instead of framing them. Leaving
+      the bar FL_FLAT_BOX makes FLTK fall back to FL_UP_BOX for the popups
+      on its own, and drops the title window's inset to 1px so the pressed
+      border lands exactly between the band's two rules. The band is then
+      drawn by `EditMenuBar::draw()`, and the pressed title by a labeltype
+      (`down_box()` cannot serve both the title and the blue item fill).
+      All in `fltk_ui/edit_menupad.h`.
 
 ## Ideas not asked for yet
 - ```bash / ```bat fenced blocks in Markdown. NOT free: it would push

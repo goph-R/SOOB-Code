@@ -54,7 +54,7 @@
 /* Bump on a feature change. The __DATE__/__TIME__ stamp beside it is the one
  * that cannot lie: the compiler writes it, so a title showing an old timestamp
  * means the running exe is not the one you just built. */
-#define CODEEDIT_VERSION "1.6"
+#define CODEEDIT_VERSION "1.7"
 
 #define MAX_DOCS   16
 #define MENU_H     25
@@ -1166,13 +1166,14 @@ int main(int argc, char **argv)
     gWin->color(CODE_COL_BG);
     gWin->begin();
     {
-        gMenuBar = new Fl_Menu_Bar(0, 0, 760, MENU_H);
+        gMenuBar = new EditMenuBar(0, 0, 760, MENU_H);
         gMenuBar->menu(gMenu);
         editMenuPad(gMenuBar);
-        /* IE5 look: no 3D frame, a 1px gray+white groove top and bottom, 11px
-         * labels. Before editDpiScaleTree(), which is why the size is scaled
-         * by hand here -- textsize() is not geometry, so the tree walk does
-         * not touch it. */
+        /* Office 97 look: a 1px white / dark gray band, the open title pushed
+         * in with a 1px border, 3D-framed drop-downs with blue highlights,
+         * 11px labels. Before editDpiScaleTree(), which is why the size is
+         * scaled by hand here -- textsize() is not geometry, so the tree walk
+         * does not touch it. */
         editMenuBarStyle(gMenuBar, editDpi(11));
 
         gTabs = new CodeTabs(0, MENU_H, 760, 560 - MENU_H - STATUS_H);
