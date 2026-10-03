@@ -54,7 +54,7 @@
 /* Bump on a feature change. The __DATE__/__TIME__ stamp beside it is the one
  * that cannot lie: the compiler writes it, so a title showing an old timestamp
  * means the running exe is not the one you just built. */
-#define CODEEDIT_VERSION "1.4"
+#define CODEEDIT_VERSION "1.5"
 
 #define MAX_DOCS   16
 #define MENU_H     25
@@ -308,6 +308,10 @@ static int saveDoc(int i, int forcePrompt)
         codeLastDirFromPath(&gSet, d->path);   /* shared with Open; recentNote saves */
         recentNote(d->path);
     }
+    /* Trim before the encoding check, so a line that is nothing but
+     * whitespace cannot be what makes an ANSI save look lossy. The widget
+     * does it as one undo step, so Ctrl+Z brings the whitespace back. */
+    if (gSet.trimTrailing) d->ed->trimTrailingBlanks();
     /* ANSI can only hold the characters of the system code page */
     if (d->ed->encoding() == CODE_ENC_ANSI && d->ed->ansiLossy()) {
         int c = fl_choice("Some characters in\n%s\ncannot be saved as ANSI.",
@@ -664,9 +668,9 @@ static void applySettings(void)
 static void cbSettings(Fl_Widget *, void *)
 {
     char buf[16];
-    Fl_Double_Window *w = new Fl_Double_Window(340, 226, "Settings");
+    Fl_Double_Window *w = new Fl_Double_Window(340, 250, "Settings");
     Fl_Int_Input *font, *tab, *wrap;
-    Fl_Check_Button *tabs, *nums, *rem;
+    Fl_Check_Button *tabs, *nums, *trim, *rem;
     Fl_Return_Button *ok;
     Fl_Button *cancel;
     Fl_Box *hint;
@@ -679,9 +683,11 @@ static void cbSettings(Fl_Widget *, void *)
     hint->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
     tabs = new Fl_Check_Button(16, 104, 310, 22, "Indent with tab characters");
     nums = new Fl_Check_Button(16, 128, 310, 22, "Show line numbers");
-    rem  = new Fl_Check_Button(16, 152, 310, 22, "Remember window size and position");
-    ok     = new Fl_Return_Button(150, 190, 86, 26, "OK");
-    cancel = new Fl_Button(244, 190, 86, 26, "Cancel");
+    trim = new Fl_Check_Button(16, 152, 310, 22,
+                               "Remove trailing whitespace on save");
+    rem  = new Fl_Check_Button(16, 176, 310, 22, "Remember window size and position");
+    ok     = new Fl_Return_Button(150, 214, 86, 26, "OK");
+    cancel = new Fl_Button(244, 214, 86, 26, "Cancel");
     w->end();
     editDpiScaleTree(w);
 
@@ -690,6 +696,7 @@ static void cbSettings(Fl_Widget *, void *)
     sprintf(buf, "%d", gSet.wrapCol);  wrap->value(buf);
     tabs->value(gSet.useTabs);
     nums->value(gSet.lineNumbers);
+    trim->value(gSet.trimTrailing);
     rem->value(gSet.rememberWin);
 
     /* Modal, driven by Fl::readqueue(): widgets without a callback of their
@@ -706,6 +713,7 @@ static void cbSettings(Fl_Widget *, void *)
             gSet.wrapCol     = codeClampInt(atoi(wrap->value()), 0, 1000);
             gSet.useTabs     = tabs->value() ? 1 : 0;
             gSet.lineNumbers = nums->value() ? 1 : 0;
+            gSet.trimTrailing = trim->value() ? 1 : 0;
             gSet.rememberWin = rem->value() ? 1 : 0;
             applySettings();
             codeSettingsSave(&gSet);

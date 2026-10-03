@@ -13,6 +13,8 @@
  *   line_numbers=1       show the line-number gutter
  *   wrap_column=0        column used when Word Wrap is switched on for a file
  *                        that has no column of its own (0 = window width)
+ *   trim_trailing=1      strip trailing spaces / tabs from every line on
+ *                        save (Markdown keeps a two-space hard line break)
  *   remember_window=1    restore the window size and position
  *   window=x,y,w,h       last window rectangle (real pixels)
  *   last_dir=...         folder the Open / Save As dialog last used -- ONE
@@ -35,6 +37,7 @@ typedef struct CodeSettings {
     int  useTabs;
     int  lineNumbers;
     int  wrapCol;
+    int  trimTrailing;
     int  rememberWin;
     int  winX, winY, winW, winH;          /* winW == 0: never saved */
     char lastDir[512];                    /* empty => never used a dialog */
@@ -52,6 +55,7 @@ static void codeSettingsDefaults(CodeSettings *s)
     s->useTabs     = 0;
     s->lineNumbers = 1;
     s->wrapCol     = 0;
+    s->trimTrailing = 1;                  /* on by default, as asked */
     s->rememberWin = 1;
 }
 
@@ -92,6 +96,7 @@ static void codeSettingsLoad(CodeSettings *s)
         else if (!strcmp(line, "use_tabs"))        s->useTabs     = atoi(v) != 0;
         else if (!strcmp(line, "line_numbers"))    s->lineNumbers = atoi(v) != 0;
         else if (!strcmp(line, "wrap_column"))     s->wrapCol     = codeClampInt(atoi(v), 0, 1000);
+        else if (!strcmp(line, "trim_trailing"))   s->trimTrailing = atoi(v) != 0;
         else if (!strcmp(line, "remember_window")) s->rememberWin = atoi(v) != 0;
         else if (!strcmp(line, "window"))
             sscanf(v, "%d,%d,%d,%d", &s->winX, &s->winY, &s->winW, &s->winH);
@@ -122,6 +127,7 @@ static void codeSettingsSave(const CodeSettings *s)
     fprintf(f, "use_tabs=%d\n", s->useTabs);
     fprintf(f, "line_numbers=%d\n", s->lineNumbers);
     fprintf(f, "wrap_column=%d\n", s->wrapCol);
+    fprintf(f, "trim_trailing=%d\n", s->trimTrailing);
     fprintf(f, "remember_window=%d\n", s->rememberWin);
     if (s->winW > 0)
         fprintf(f, "window=%d,%d,%d,%d\n", s->winX, s->winY, s->winW, s->winH);

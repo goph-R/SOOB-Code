@@ -44,9 +44,19 @@ without testing by hand on Win98.
       it fires even when the value has not changed. It also pushed a junk
       undo step. SOOB-Core edit_code.h.
 
-## Ideas not asked for yet
+## Done in 1.5
 
-- Pascal `begin` / `end` block indent: one row in `codeBlockWordTable`
+- [x] Pascal `begin` / `end` indent. Needed a fourth word category, `hint`:
+      Pascal's `then` / `do` govern ONE statement and are closed by nothing,
+      so counting them as openers made a later `end` align to the nearest
+      dangling `then` instead of its `begin`. `else` is a hint too, not a
+      re-indent trigger -- aligning it with its `if` would need `if` tracked,
+      and `if` has no closer.
+- [x] Strip trailing whitespace on save, `trim_trailing` in codeedit.ini,
+      on by default, with a Settings checkbox. Markdown keeps a two-space
+      hard line break; a run containing a tab is not a break and goes.
+
+## Ideas not asked for yet
 - ```bash / ```bat fenced blocks in Markdown. NOT free: it would push
   `LEX_MD_NSUB` to 13 and the fence carry states into `LS_CF_BLOCK`, so
   every `LS_CF_*` would have to shift up and `LS_MAX` would land on 62 --
