@@ -91,6 +91,28 @@ without testing by hand on Win98.
       (`down_box()` cannot serve both the title and the blue item fill).
       All in `fltk_ui/edit_menupad.h`.
 
+## Done in 1.8
+
+- [x] Word 97 menu metrics, measured off a screenshot of Word itself rather
+      than guessed: 19px rows (the text height plus three), the icon column
+      a square the height of the row with the text 25px in from the edge,
+      separators etched 128-gray over white and inset 3px from both content
+      edges, and a checked item marked with Word's pressed-toolbar-button
+      square -- 1px sunken, a white/face checkerboard, the Win95 tick.
+
+      FLTK draws FL_MENU_DIVIDER itself, after the label, so a labeltype
+      cannot restyle it; `editMenuPad()` now clears the flag and hands the
+      rule to the item below, which draws it in the leading above its own
+      cell. Only those two rows are safe -- drawentry()'s erase clip reaches
+      exactly to one row above them. The four item states (checked, ruled,
+      both, neither) are one labeltype plus a two-bit code, since Fl_Label
+      carries its own type.
+
+      Not matched, and not matchable: Word gives a separator its own 10px
+      row, FLTK has only the 4px leading, so the rule has less air (5/4 vs
+      Word's 7/10). A dummy item would cost a full 19px row and land no
+      closer.
+
 ## Ideas not asked for yet
 - ```bash / ```bat fenced blocks in Markdown. NOT free: it would push
   `LEX_MD_NSUB` to 13 and the fence carry states into `LS_CF_BLOCK`, so
