@@ -15,6 +15,8 @@
  *                        that has no column of its own (0 = window width)
  *   remember_window=1    restore the window size and position
  *   window=x,y,w,h       last window rectangle (real pixels)
+ *   last_dir=...         folder the Open / Save As dialog last used -- ONE
+ *                        entry shared by both, so the two always agree
  *   recent1=...          recent files, most recent first
  */
 
@@ -35,6 +37,7 @@ typedef struct CodeSettings {
     int  wrapCol;
     int  rememberWin;
     int  winX, winY, winW, winH;          /* winW == 0: never saved */
+    char lastDir[512];                    /* empty => never used a dialog */
     int  nRecent;
     char recent[CODE_MAX_RECENT][512];
 } CodeSettings;
@@ -92,6 +95,10 @@ static void codeSettingsLoad(CodeSettings *s)
         else if (!strcmp(line, "remember_window")) s->rememberWin = atoi(v) != 0;
         else if (!strcmp(line, "window"))
             sscanf(v, "%d,%d,%d,%d", &s->winX, &s->winY, &s->winW, &s->winH);
+        else if (!strcmp(line, "last_dir")) {
+            strncpy(s->lastDir, v, sizeof(s->lastDir) - 1);
+            s->lastDir[sizeof(s->lastDir) - 1] = '\0';
+        }
         else if (!strncmp(line, "recent", 6) && *v && s->nRecent < CODE_MAX_RECENT) {
             strncpy(s->recent[s->nRecent], v, sizeof(s->recent[0]) - 1);
             s->recent[s->nRecent][sizeof(s->recent[0]) - 1] = '\0';
@@ -118,6 +125,8 @@ static void codeSettingsSave(const CodeSettings *s)
     fprintf(f, "remember_window=%d\n", s->rememberWin);
     if (s->winW > 0)
         fprintf(f, "window=%d,%d,%d,%d\n", s->winX, s->winY, s->winW, s->winH);
+    if (s->lastDir[0])
+        fprintf(f, "last_dir=%s\n", s->lastDir);
     for (i = 0; i < s->nRecent; i++)
         fprintf(f, "recent%d=%s\n", i + 1, s->recent[i]);
     fclose(f);
@@ -142,6 +151,31 @@ static void codeRecentAdd(CodeSettings *s, const char *path)
     for (j = i; j > 0; j--) strcpy(s->recent[j], s->recent[j - 1]);
     strncpy(s->recent[0], path, sizeof(s->recent[0]) - 1);
     s->recent[0][sizeof(s->recent[0]) - 1] = '\0';
+}
+
+/* Remember the folder `path` lives in, as the starting point for the next
+ * Open / Save As. A bare filename has no folder in it and leaves the stored
+ * one alone -- better to keep where the user last browsed than to replace it
+ * with nothing. */
+static void codeLastDirFromPath(CodeSettings *s, const char *path)
+{
+    const char *fwd, *back, *sl;
+    int n;
+    if (!path || !*path) return;
+    fwd  = strrchr(path, '/');
+    back = strrchr(path, '\\');
+    sl   = fwd > back ? fwd : back;
+    if (!sl) return;
+    n = (int)(sl - path);
+    /* Keep the separator when dropping it would change the meaning: "\" is
+     * the root, and a bare "C:" is "the current directory on drive C:" to
+     * comdlg32 -- NOT C:\ -- which would send the dialog somewhere else
+     * entirely. Everywhere else the trailing separator is left off. */
+    if (n == 0) n = 1;                              /* "\file"  -> "\"   */
+    else if (n == 2 && path[1] == ':') n = 3;       /* "C:\file" -> "C:\" */
+    if (n > (int)sizeof(s->lastDir) - 1) return;
+    memcpy(s->lastDir, path, (size_t)n);
+    s->lastDir[n] = '\0';
 }
 
 static void codeRecentRemove(CodeSettings *s, int i)

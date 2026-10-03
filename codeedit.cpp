@@ -35,6 +35,9 @@
 #include <FL/Fl_Return_Button.H>
 #include <FL/Fl_Int_Input.H>
 #include <FL/Fl_Box.H>
+#ifdef _WIN32
+#include <FL/x.H>                  /* fl_xid(), for the file dialogs' owner */
+#endif
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -51,7 +54,7 @@
 /* Bump on a feature change. The __DATE__/__TIME__ stamp beside it is the one
  * that cannot lie: the compiler writes it, so a title showing an old timestamp
  * means the running exe is not the one you just built. */
-#define CODEEDIT_VERSION "1.1"
+#define CODEEDIT_VERSION "1.3"
 
 #define MAX_DOCS   16
 #define MENU_H     25
@@ -74,6 +77,7 @@ static int              gUntitledSeq = 1;
 static Fl_Double_Window *gFindWin;      /* defined with the Find UI below */
 static CodeSettings     gSet;           /* codeedit.ini, see edit_settings.h */
 static void recentNote(const char *path);
+static void findRetireStaleMsg(void);   /* defined with the Find UI below */
 
 static void msg(const char *fmt, ...)
 {
@@ -98,6 +102,59 @@ static void copyStr(char *dst, int dstlen, const char *src)
     dst[n] = '\0';
 }
 
+/* A modal integer prompt with the default value PRESELECTED, so typing
+ * replaces it instead of appending to it. That is the whole reason it exists:
+ * fl_input() hands back only the string, never its Fl_Input, so there is no
+ * way to select its contents -- and its window is not parented to ours, which
+ * is half of why the dialogs felt loose. Used by Go to line and Wrap at
+ * Column. Returns 1 and writes *out, or 0 if cancelled.
+ *
+ * Same Fl::readqueue() loop as cbSettings(): widgets with no callback of their
+ * own are queued when activated, so OK / Cancel / Enter need no callbacks. */
+static int codeAskInt(const char *title, const char *prompt, int def, int *out)
+{
+    char buf[32];
+    Fl_Double_Window *w = new Fl_Double_Window(340, 104, title);
+    Fl_Int_Input *in;
+    Fl_Return_Button *ok;
+    Fl_Button *cancel;
+    Fl_Box *lab;
+    int got = 0;
+
+    w->begin();
+    lab = new Fl_Box(10, 8, 320, 20, prompt);
+    lab->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    in  = new Fl_Int_Input(10, 32, 320, 24);
+    in->when(FL_WHEN_ENTER_KEY_ALWAYS);        /* Enter in the field = OK */
+    ok     = new Fl_Return_Button(150, 68, 86, 26, "OK");
+    cancel = new Fl_Button(244, 68, 86, 26, "Cancel");
+    w->end();
+    editDpiScaleTree(w);
+
+    sprintf(buf, "%d", def);
+    in->value(buf);
+    w->set_modal();
+    w->show();
+    /* After show(): take_focus() sends FL_FOCUS, and the selection has to be
+     * set after that, not before, or the focus handler would drop it. */
+    in->take_focus();
+    in->position(0, (int)strlen(buf));
+
+    while (w->shown()) {
+        Fl_Widget *o = Fl::readqueue();
+        if (!o) { Fl::wait(); continue; }
+        if (o == cancel) break;
+        if (o == ok || o == in) {
+            *out = atoi(in->value());
+            got = 1;
+            break;
+        }
+    }
+    w->hide();
+    Fl::delete_widget(w);
+    return got;
+}
+
 static const char *baseName(const char *p)
 {
     const char *a = strrchr(p, '/');
@@ -106,11 +163,17 @@ static const char *baseName(const char *p)
     return s ? s + 1 : p;
 }
 
-/* Directory of the current document, for the file dialog's starting point. */
+/* Where the Open / Save As dialog should start.
+ *
+ * The folder the last dialog actually used wins, and Open and Save As share
+ * the one entry -- so the pair always agrees, and it survives a restart
+ * (last_dir in codeedit.ini). Only when there is no stored folder yet do we
+ * fall back to the folder the current document lives in. */
 static const char *currentDir(char *buf, int len)
 {
     int i, n;
     buf[0] = '\0';
+    if (gSet.lastDir[0]) { copyStr(buf, len, gSet.lastDir); return buf; }
     for (i = 0; i < gDocCount; i++) {
         if (gTabs->value() == (Fl_Widget *)gDocs[i].ed && gDocs[i].path[0]) {
             const char *b = baseName(gDocs[i].path);
@@ -242,6 +305,7 @@ static int saveDoc(int i, int forcePrompt)
         copyStr(d->path, (int)sizeof(d->path), picked);
         /* the extension may have changed the language */
         d->ed->language(lexLangFromPath(d->path));
+        codeLastDirFromPath(&gSet, d->path);   /* shared with Open; recentNote saves */
         recentNote(d->path);
     }
     /* ANSI can only hold the characters of the system code page */
@@ -361,8 +425,13 @@ static void cbOpen(Fl_Widget *, void *)
 {
     char picked[512], dirbuf[512];
     if (codeFileOpenDialog(picked, (int)sizeof(picked),
-                           currentDir(dirbuf, (int)sizeof(dirbuf))))
-        addDoc(picked);
+                           currentDir(dirbuf, (int)sizeof(dirbuf)))) {
+        /* Before addDoc(): its recentNote() writes the ini, so the new folder
+         * is persisted by the same save. Recorded even if the open then fails
+         * -- that is still where the user was looking. */
+        codeLastDirFromPath(&gSet, picked);
+        if (!addDoc(picked)) codeSettingsSave(&gSet);
+    }
 }
 
 static void cbSave  (Fl_Widget *, void *) { saveDoc(currentIndex(), 0); }
@@ -438,16 +507,16 @@ static void cbWrap(Fl_Widget *, void *)
 static void cbWrapCol(Fl_Widget *, void *)
 {
     CodeEditor *ed;
-    char def[32];
-    const char *ans;
-    int i = currentIndex();
+    int col, i = currentIndex();
 
     if (i < 0) return;
     ed = gDocs[i].ed;
-    sprintf(def, "%d", gDocs[i].wrapColSet ? ed->wrapColumn() : gSet.wrapCol);
-    ans = fl_input("Wrap at column  (0 = wrap to window width):", def);
-    if (!ans) return;
-    ed->wrapColumn(atoi(ans));
+    if (!codeAskInt("Wrap at Column", "Wrap at column  (0 = wrap to window width):",
+                    gDocs[i].wrapColSet ? ed->wrapColumn() : gSet.wrapCol, &col))
+        return;
+    /* Same range the Settings dialog clamps wrap_column to. fl_input() let a
+     * negative through, which reaches wrapPixels() as a negative width. */
+    ed->wrapColumn(codeClampInt(col, 0, 1000));
     gDocs[i].wrapColSet = 1;
     ed->wrapEnable(1);
     ed->redraw();
@@ -718,6 +787,7 @@ static void statusCheck(void *)
 {
     char buf[200];
     int i, line, col;
+    findRetireStaleMsg();
     if (!gStatus || !gTabs) return;
     i = currentIndex();
     if (i < 0) { gStatus->set(""); return; }
@@ -737,18 +807,72 @@ static void statusCheck(void *)
 static Fl_Input  *gFindIn, *gReplIn;
 static Fl_Check_Button *gCaseChk, *gWrapChk;
 
+/* The Find window's own message line -- "Not found", or the Replace All
+ * count. In the window rather than an fl_alert() because a modal popup for
+ * "no match" is heavy-handed when you are hammering Find Next.
+ *
+ * gFindMsgFor is the needle the message belongs to, so statusCheck() can
+ * retire a stale "Not found" the moment the query is edited: the label must
+ * never outlive the search that produced it. label() with a static buffer,
+ * not copy_label(), to keep this allocation-free. */
+static Fl_Box *gFindMsg;
+static char    gFindMsgText[80];
+static char    gFindMsgFor[128];     /* truncated; gFindMsgForLen is not */
+static int     gFindMsgForLen;
+
+static void findSay(const char *needle, const char *fmt, ...)
+{
+    va_list ap;
+    if (!gFindMsg) return;
+    va_start(ap, fmt);
+    vsnprintf(gFindMsgText, sizeof(gFindMsgText), fmt, ap);
+    va_end(ap);
+    gFindMsgText[sizeof(gFindMsgText) - 1] = '\0';
+    copyStr(gFindMsgFor, (int)sizeof(gFindMsgFor), needle);
+    gFindMsgForLen = needle ? (int)strlen(needle) : 0;
+    gFindMsg->label(gFindMsgText);
+    gFindMsg->redraw();
+}
+
+static void findSayClear(void)
+{
+    if (!gFindMsg) return;
+    gFindMsgText[0]  = '\0';
+    gFindMsgFor[0]   = '\0';
+    gFindMsgForLen   = 0;
+    gFindMsg->label(gFindMsgText);
+    gFindMsg->redraw();
+}
+
+/* Called from statusCheck() after every event batch: the moment the needle no
+ * longer matches the one the message was about, the message is wrong, so drop
+ * it. One strcmp, and only while the Find window is up with something to say. */
+static void findRetireStaleMsg(void)
+{
+    const char *v;
+    if (!gFindMsg || !gFindMsgText[0] || !gFindIn) return;
+    v = gFindIn->value();
+    /* Compare the length too: gFindMsgFor holds only the first 127 bytes, so
+     * a longer needle would never match itself and the message would vanish
+     * the instant it appeared. */
+    if ((int)strlen(v) != gFindMsgForLen ||
+        strncmp(v, gFindMsgFor, sizeof(gFindMsgFor) - 1) != 0)
+        findSayClear();
+}
+
 static CodeEditor *curEd(void)
 {
     int i = currentIndex();
     return i >= 0 ? gDocs[i].ed : 0;
 }
 
-/* Select [at, at+len) and scroll it into view. */
+/* Select [at, at+len) and bring it to the MIDDLE of the view, not just barely
+ * on screen -- a match arriving with context around it is much easier to read
+ * than one pinned to the last line. */
 static void selectMatch(CodeEditor *ed, int at, int len)
 {
-    ed->insert_position(at + len);
+    ed->showCentered(at + len);
     ed->buffer()->select(at, at + len);
-    ed->show_insert_position();
     ed->redraw();
 }
 
@@ -756,7 +880,7 @@ static void doFind(int backwards)
 {
     CodeEditor *ed = curEd();
     const char *needle;
-    int at, from, mc, wrap;
+    int at = 0, from, mc, wrap, found;
 
     if (!ed || !gFindIn) return;
     needle = gFindIn->value();
@@ -770,16 +894,18 @@ static void doFind(int backwards)
         int selStart, selEnd;
         from = ed->buffer()->selection_position(&selStart, &selEnd)
              ? selStart : ed->insert_position();
-        if (codeFindPrev(ed->buffer(), needle, from, mc, wrap, &at))
-            selectMatch(ed, at, (int)strlen(needle));
-        else
-            fl_beep();
+        found = codeFindPrev(ed->buffer(), needle, from, mc, wrap, &at);
     } else {
         from = ed->insert_position();
-        if (codeFindNext(ed->buffer(), needle, from, mc, wrap, &at))
-            selectMatch(ed, at, (int)strlen(needle));
-        else
-            fl_beep();
+        found = codeFindNext(ed->buffer(), needle, from, mc, wrap, &at);
+    }
+
+    if (found) {
+        selectMatch(ed, at, (int)strlen(needle));
+        findSayClear();
+    } else {
+        fl_beep();
+        findSay(needle, "Not found");
     }
 }
 
@@ -828,7 +954,7 @@ static void cbReplaceAll(Fl_Widget *, void *)
 
     ed->buffer()->unselect();
     ed->redraw();
-    fl_message("Replaced %d occurrence%s.", n, n == 1 ? "" : "s");
+    findSay(needle, "Replaced %d occurrence%s.", n, n == 1 ? "" : "s");
 }
 
 static void cbFindClose(Fl_Widget *, void *) { if (gFindWin) gFindWin->hide(); }
@@ -852,11 +978,15 @@ static void openFindWindow(int withReplace)
           b = new Fl_Button(265, 96, 100, 24, "Replace All"); b->callback(cbReplaceAll);
           b = new Fl_Button(285, 122, 80, 24, "Close");       b->callback(cbFindClose);
         }
+        /* The message line fills the space left of Close -- no resize needed. */
+        gFindMsg = new Fl_Box(10, 122, 270, 24, gFindMsgText);
+        gFindMsg->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
         gFindWin->end();
         editDpiScaleTree(gFindWin);
         gFindWin->callback(cbFindClose);
     }
     gReplIn->activate();
+    findSayClear();                  /* a fresh window starts with no verdict */
     if (!withReplace) gFindIn->take_focus();
     gFindWin->show();
     gFindIn->take_focus();
@@ -868,15 +998,12 @@ static void cbReplace(Fl_Widget *, void *) { openFindWindow(1); }
 static void cbGotoLine(Fl_Widget *, void *)
 {
     CodeEditor *ed = curEd();
-    char def[32];
-    const char *ans;
     int line, pos;
 
     if (!ed) return;
-    sprintf(def, "%d", codeLineOfPos(ed->buffer(), ed->insert_position()));
-    ans = fl_input("Go to line:", def);
-    if (!ans) return;
-    line = atoi(ans);
+    if (!codeAskInt("Go to Line", "Go to line:",
+                    codeLineOfPos(ed->buffer(), ed->insert_position()), &line))
+        return;
     if (line < 1) return;
     pos = codeGotoLinePos(ed->buffer(), line);
     ed->insert_position(pos);
@@ -1024,6 +1151,11 @@ int main(int argc, char **argv)
         gMenuBar = new Fl_Menu_Bar(0, 0, 760, MENU_H);
         gMenuBar->menu(gMenu);
         editMenuPad(gMenuBar);
+        /* IE5 look: no 3D frame, a 1px gray+white groove top and bottom, 11px
+         * labels. Before editDpiScaleTree(), which is why the size is scaled
+         * by hand here -- textsize() is not geometry, so the tree walk does
+         * not touch it. */
+        editMenuBarStyle(gMenuBar, editDpi(11));
 
         gTabs = new CodeTabs(0, MENU_H, 760, 560 - MENU_H - STATUS_H);
         /* Flat, borderless tabs (edit_tabs.h): the row strip in color(), the
@@ -1098,6 +1230,12 @@ int main(int argc, char **argv)
     }
 
     gWin->show();
+#ifdef _WIN32
+    /* After show(): fl_xid() only has a window to return once it is mapped.
+     * Gives the comdlg32 Open / Save dialogs an owner, so they are modal to
+     * us instead of to the desktop -- see edit_filedlg.h. */
+    codeFileDlgSetOwner((void *)fl_xid(gWin));
+#endif
     msg("codeedit: %d document(s) open\n", gDocCount);
     return Fl::run();
 }
