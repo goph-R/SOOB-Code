@@ -54,7 +54,7 @@
 /* Bump on a feature change. The __DATE__/__TIME__ stamp beside it is the one
  * that cannot lie: the compiler writes it, so a title showing an old timestamp
  * means the running exe is not the one you just built. */
-#define CODEEDIT_VERSION "1.5"
+#define CODEEDIT_VERSION "1.6"
 
 #define MAX_DOCS   16
 #define MENU_H     25
@@ -744,6 +744,9 @@ static const char *langName(int lang)
     case LEX_LANG_SQL:      return "SQL";
     case LEX_LANG_BASH:     return "Bash";
     case LEX_LANG_BAT:      return "Batch";
+    case LEX_LANG_INI:      return "INI";
+    case LEX_LANG_JSON:     return "JSON";
+    case LEX_LANG_XML:      return "XML";
     default:                return "Plain text";
     }
 }
@@ -1077,14 +1080,17 @@ static Fl_Menu_Item gMenu[] = {
         { "C / C++",    0, cbLang, (void *)LEX_LANG_C },
         { "CSS",        0, cbLang, (void *)LEX_LANG_CSS },
         { "HTML",       0, cbLang, (void *)LEX_LANG_HTML },
+        { "INI",        0, cbLang, (void *)LEX_LANG_INI },
         { "Java",       0, cbLang, (void *)LEX_LANG_JAVA },
         { "JavaScript", 0, cbLang, (void *)LEX_LANG_JS },
+        { "JSON",       0, cbLang, (void *)LEX_LANG_JSON },
         { "Lua",        0, cbLang, (void *)LEX_LANG_LUA },
         { "Markdown",   0, cbLang, (void *)LEX_LANG_MARKDOWN },
         { "Pascal",     0, cbLang, (void *)LEX_LANG_PASCAL },
         { "PHP",        0, cbLang, (void *)LEX_LANG_PHP },
         { "Python",     0, cbLang, (void *)LEX_LANG_PYTHON },
         { "SQL",        0, cbLang, (void *)LEX_LANG_SQL },
+        { "XML",        0, cbLang, (void *)LEX_LANG_XML },
         { 0 },
     { 0 }
 };

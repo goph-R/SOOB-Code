@@ -12,10 +12,12 @@ the status bar.*
 ## Features
 
 - Tabs, Find / Replace (Enter = Find Next), Go to line, undo / redo
-- Syntax highlighting: Bash / sh, Batch (`.bat` / `.cmd`), C / C++, CSS,
-  HTML (with `<script>` / `<style>`), Java, JavaScript, Lua, Markdown (with
+- Syntax highlighting: Bash / sh, Batch (`.bat` / `.cmd`), C / C++ (also
+  `.glsl` / `.vert` / `.frag` / `.inl` / `.rc`), CSS, HTML (with `<script>` /
+  `<style>`), INI (`.ini` / `.cfg` / `.inf`), Java, JavaScript (also `.ts` /
+  `.tsx`), JSON (keys told apart from string values), Lua, Markdown (with
   fenced code), Pascal, PHP (HTML templates with `<?php ?>` blocks), Python,
-  SQL
+  SQL, XML (`.xml` / `.xsd` / `.xsl` / `.svg` / `.tmx` / `.qrc` / `.csproj`)
 - Auto-indent, Tab / Shift+Tab block indent; `}` `]` `)` re-indent to their
   opener, and so do Lua's `end` / `until` / `else` and Pascal's
   `end` / `until` / `except` / `finally`
