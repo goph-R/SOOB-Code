@@ -18,4 +18,7 @@ with `static` functions, C-style casts, `malloc` / `free`. Read
   `e98.bat`'s comment about 8.3 names is probably a misdiagnosis of that
   last rule: a FILE through `..\SOOB-Core\...` resolves fine on the target.
   Batch files are CRLF (`.gitattributes`).
-- Bump `CODEEDIT_VERSION` in `codeedit.cpp` on a feature change.
+- Bump `CODEEDIT_VERSION` in `codeedit.cpp`: the **minor** on a feature change,
+  the **third component** on a bug fix (`1.9` -> `1.9.1`), dropping the patch
+  component again at the next feature (`1.10`). Commit subjects carry it:
+  `SOOB-Code 1.9.1: <what>`.

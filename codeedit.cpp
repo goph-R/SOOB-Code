@@ -51,10 +51,12 @@
 #include "fltk_ui/edit_find.h"
 #include "edit_settings.h"
 
-/* Bump on a feature change. The __DATE__/__TIME__ stamp beside it is the one
- * that cannot lie: the compiler writes it, so a title showing an old timestamp
- * means the running exe is not the one you just built. */
-#define CODEEDIT_VERSION "1.9"
+/* major.minor.patch -- bump the minor on a feature change, the third component
+ * on a bug fix (and drop it again at the next feature). The __DATE__/__TIME__
+ * stamp beside it is the one that cannot lie: the compiler writes it, so a
+ * title showing an old timestamp means the running exe is not the one you just
+ * built. */
+#define CODEEDIT_VERSION "1.9.1"
 
 #define MAX_DOCS   16
 #define MENU_H     25
