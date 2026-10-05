@@ -129,7 +129,23 @@ without testing by hand on Win98.
       `Fl_Scrollbar.o`, `Fl_Menu.o` and `fltkok.tag` out of
       `vendor\fltk-1.3\FL\lib`.
 
+## Done in 1.10
+
+- [x] Single instance: starting codeedit while one is running hands the
+      file names to the running window (one tab each; a file that is
+      already open just gets its tab selected), restores and raises it, and
+      exits. So Total Commander's F4 on several files gives tabs, not
+      windows. Win98-safe: a named mutex to detect, WM_COPYDATA with full
+      paths to hand over (the two processes need not share a working
+      directory), and the window is found by its class plus a window
+      property -- FLTK reuses the first window's class for the dialogs too.
+      The NEW instance raises the window, since Windows only lets the
+      foreground process do that; on 2000 / Me and later it also allows the
+      running one (AllowSetForegroundWindow, looked up at runtime).
+
 ## Ideas not asked for yet
+- A `-new` switch, or a Settings checkbox, for the odd time a second
+  window is wanted.
 - ```bash / ```bat fenced blocks in Markdown. NOT free: it would push
   `LEX_MD_NSUB` to 13 and the fence carry states into `LS_CF_BLOCK`, so
   every `LS_CF_*` would have to shift up and `LS_MAX` would land on 62 --

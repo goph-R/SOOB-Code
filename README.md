@@ -30,6 +30,8 @@ the status bar.*
   open, kept on save; CRLF / LF kept too
 - Status bar (Ln/Col, language, line ending, encoding), recent files,
   word wrap, settings (`codeedit.ini` next to the exe)
+- Single instance: opening more files (e.g. F4 in Total Commander) adds tabs
+  to the running window instead of starting another one
 - DPI-aware on Vista+ (Segoe UI / Consolas), plain Arial / Courier New on Win98
 
 ## Layout

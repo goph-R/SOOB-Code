@@ -56,7 +56,7 @@
  * stamp beside it is the one that cannot lie: the compiler writes it, so a
  * title showing an old timestamp means the running exe is not the one you just
  * built. */
-#define CODEEDIT_VERSION "1.9.1"
+#define CODEEDIT_VERSION "1.10"
 
 #define MAX_DOCS   16
 #define MENU_H     25
@@ -457,6 +457,10 @@ static void cbClose (Fl_Widget *, void *)
     codeTrace("cbClose: returned");
 }
 
+#ifdef _WIN32
+static void ipcUnregister(void);           /* single instance, near main() */
+#endif
+
 static void cbExit(Fl_Widget *, void *)
 {
     if (quitAll()) {
@@ -468,6 +472,9 @@ static void cbExit(Fl_Widget *, void *)
         }
         codeSettingsSave(&gSet);
         if (gFindWin) gFindWin->hide();   /* else Fl::run() never returns */
+#ifdef _WIN32
+        ipcUnregister();
+#endif
         gWin->hide();
     }
 }
@@ -630,21 +637,29 @@ static void recentNote(const char *path)
     syncRecentItems();
 }
 
-static void cbRecent(Fl_Widget *, void *v)
+/* Show path's tab if it is already open, else open it in a new one.
+ * Returns 0 if it cannot be opened (addDoc() has said so). */
+static int openOrShow(const char *path)
 {
-    char path[512];
-    int i, k = (int)(long)v;
-    if (k < 0 || k >= gSet.nRecent) return;
-    copyStr(path, (int)sizeof(path), gSet.recent[k]);
+    int i;
     for (i = 0; i < gDocCount; i++)                   /* already open: just show it */
         if (codePathEq(gDocs[i].path, path)) {
             gTabs->value(gDocs[i].ed);
             gTabs->redraw();
             gDocs[i].ed->take_focus();
             recentNote(path);
-            return;
+            return 1;
         }
-    if (!addDoc(path)) {                              /* gone: drop it from the list */
+    return addDoc(path) != 0;
+}
+
+static void cbRecent(Fl_Widget *, void *v)
+{
+    char path[512];
+    int i, k = (int)(long)v;
+    if (k < 0 || k >= gSet.nRecent) return;
+    copyStr(path, (int)sizeof(path), gSet.recent[k]);
+    if (!openOrShow(path)) {                          /* gone: drop it from the list */
         for (i = 0; i < gSet.nRecent; i++)
             if (codePathEq(gSet.recent[i], path)) { codeRecentRemove(&gSet, i); break; }
         codeSettingsSave(&gSet);
@@ -1110,9 +1125,177 @@ static void flMsg(const char *fmt, ...)
     msg("FLTK: %s\n", buf);
 }
 
+/* ---- single instance ---------------------------------------------------
+ * Starting codeedit while one is already running hands the file names to the
+ * running one and exits, so Total Commander's F4 on five files gives five
+ * tabs in one window, not five windows. Win98-safe throughout.
+ *
+ *   detect   A named mutex (CreateMutexA). The first instance keeps it for
+ *            its lifetime; Windows releases it at exit.
+ *   find     The main window has its own class (CODE_IPC_CLASS) and a window
+ *            property (CODE_IPC_PROP). The PROPERTY is what identifies it:
+ *            FLTK 1.3 gives every later window the first window's class, so
+ *            the Find and Settings dialogs share CODE_IPC_CLASS.
+ *   send     One WM_COPYDATA per file, with the FULL path -- the two
+ *            processes need not share a working directory. An empty one
+ *            just raises the window.
+ *   receive  FLTK 1.3 passes messages it does not handle to Fl::add_handler
+ *            as event 0, with the message in fl_msg (Fl_win32.cxx, WndProc's
+ *            default branch). The data only lives for the SendMessage, so the
+ *            paths are copied out at once and opened from a zero-delay
+ *            timeout, outside the window procedure.
+ *   focus    Windows lets only the foreground process take the foreground,
+ *            and the new instance is that process (the user just started it),
+ *            so the SENDER restores and raises the window. It also lets the
+ *            receiver do it (AllowSetForegroundWindow: 2000 / Me and later,
+ *            looked up at runtime).
+ *
+ * A second instance that finds no window within 3 s -- the first one still
+ * starting up, or shutting down -- runs on its own instead. */
+#ifdef _WIN32
+#define CODE_IPC_MUTEX "SOOB-Code.codeedit.instance"
+#define CODE_IPC_CLASS "SOOBCodeEdit"
+#define CODE_IPC_PROP  "SOOBCodeEditMain"
+#define CODE_IPC_MAGIC 0x534F4F42UL        /* 'SOOB': our WM_COPYDATA */
+#define CODE_IPC_MAXQ  64
+
+static HANDLE gIpcMutex;                   /* first instance: held until exit */
+static HWND   gIpcFound;
+static char  *gIpcQueue[CODE_IPC_MAXQ];    /* paths received, not yet opened */
+static int    gIpcCount;
+
+/* Full path for a command-line argument, resolved against OUR directory. */
+static void ipcFullPath(const char *in, char *out, int len)
+{
+    char *file;
+    DWORD n = GetFullPathNameA(in, (DWORD)len, out, &file);
+    if (n == 0 || n >= (DWORD)len) copyStr(out, len, in);
+}
+
+static BOOL CALLBACK ipcEnum(HWND h, LPARAM l)
+{
+    char cls[64];
+    (void)l;
+    if (GetClassNameA(h, cls, (int)sizeof(cls)) && strcmp(cls, CODE_IPC_CLASS) == 0 &&
+        GetPropA(h, CODE_IPC_PROP)) {
+        gIpcFound = h;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static HWND ipcFindMain(void)
+{
+    gIpcFound = 0;
+    EnumWindows(ipcEnum, 0);
+    return gIpcFound;
+}
+
+/* path == 0: just "come to the front". */
+static int ipcSend(HWND h, const char *path)
+{
+    COPYDATASTRUCT cd;
+    DWORD res = 0;              /* DWORD_PTR is the same type on 32-bit */
+    cd.dwData = CODE_IPC_MAGIC;
+    cd.cbData = path ? (DWORD)strlen(path) + 1 : 0;
+    cd.lpData = (void *)path;
+    return SendMessageTimeoutA(h, WM_COPYDATA, 0, (LPARAM)&cd,
+                               SMTO_ABORTIFHUNG, 5000, &res) != 0;
+}
+
+/* Second instance: hand our files to the running one. 1 = done, exit. */
+static int ipcHandOff(int argc, char **argv)
+{
+    HWND h = 0;
+    int i, tries, sent = 0;
+    char full[600];
+
+    gIpcMutex = CreateMutexA(NULL, FALSE, CODE_IPC_MUTEX);
+    if (!gIpcMutex || GetLastError() != ERROR_ALREADY_EXISTS) return 0;
+    for (tries = 0; tries < 30 && !(h = ipcFindMain()); tries++) Sleep(100);
+    if (!h) return 0;
+
+    {   /* let the running instance raise itself, where Windows has the call */
+        typedef BOOL (WINAPI *AllowFn)(DWORD);
+        AllowFn allow = (AllowFn)GetProcAddress(GetModuleHandleA("user32.dll"),
+                                                "AllowSetForegroundWindow");
+        DWORD pid = 0;
+        GetWindowThreadProcessId(h, &pid);
+        if (allow && pid) allow(pid);
+    }
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-trace") == 0) continue;
+        ipcFullPath(argv[i], full, (int)sizeof(full));
+        if (!ipcSend(h, full)) {
+            if (!sent) return 0;           /* not answering: run on our own */
+            break;
+        }
+        sent++;
+    }
+    if (!sent) ipcSend(h, 0);
+    if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
+    SetForegroundWindow(h);
+    return 1;
+}
+
+/* Closing: stop being a hand-off target, so a codeedit started while we shut
+ * down runs on its own instead of sending files to a dying window. */
+static void ipcUnregister(void)
+{
+    if (gWin && gWin->shown()) RemovePropA(fl_xid(gWin), CODE_IPC_PROP);
+}
+
+static void ipcRaise(void)
+{
+    HWND h;
+    if (!gWin || !gWin->shown()) return;
+    h = fl_xid(gWin);
+    if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
+    SetForegroundWindow(h);
+}
+
+static void ipcOpenQueued(void *)
+{
+    int k, n = gIpcCount;
+    gIpcCount = 0;
+    for (k = 0; k < n; k++) {
+        openOrShow(gIpcQueue[k]);
+        free(gIpcQueue[k]);
+    }
+    ipcRaise();
+}
+
+/* First instance: receive. Called for every message FLTK does not handle,
+ * so the test for ours comes first and is cheap. */
+static int ipcHandler(int ev)
+{
+    COPYDATASTRUCT *cd;
+    if (ev != 0 || fl_msg.message != WM_COPYDATA) return 0;
+    cd = (COPYDATASTRUCT *)fl_msg.lParam;
+    if (!cd || cd->dwData != CODE_IPC_MAGIC) return 0;
+    if (cd->cbData > 1 && cd->lpData && gIpcCount < CODE_IPC_MAXQ) {
+        char *p = (char *)malloc(cd->cbData + 1);
+        if (p) {
+            memcpy(p, cd->lpData, cd->cbData);
+            p[cd->cbData] = '\0';
+            gIpcQueue[gIpcCount++] = p;
+        }
+    }
+    Fl::remove_timeout(ipcOpenQueued);
+    Fl::add_timeout(0.0, ipcOpenQueued);
+    return 1;
+}
+#endif
+
 int main(int argc, char **argv)
 {
     int i;
+
+#ifdef _WIN32
+    /* Before anything else: if codeedit is already running, give it our
+     * files and leave (see "single instance" above). */
+    if (ipcHandOff(argc, argv)) return 0;
+#endif
 
     /* First: DPI awareness must be declared before FLTK opens the display.
      * Widget font is 12 px at 96 DPI (FLTK default is 14), scaled for the
@@ -1211,8 +1394,19 @@ int main(int argc, char **argv)
             gWin->size(gSet.winW, gSet.winH);
     }
 
-    for (i = 1; i < argc; i++)
-        if (strcmp(argv[i], "-trace") != 0) addDoc(argv[i]);
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-trace") == 0) continue;
+#ifdef _WIN32
+        {   /* full paths, the same form a second instance hands over, so the
+             * "already open?" test in openOrShow() matches */
+            char full[600];
+            ipcFullPath(argv[i], full, (int)sizeof(full));
+            addDoc(full);
+        }
+#else
+        addDoc(argv[i]);
+#endif
+    }
     if (gDocCount == 0) addDoc(0);
 
     /* If libfltk.a is stale (ABI 10300) its linenumber_bgcolor() setter is a
@@ -1250,8 +1444,13 @@ int main(int argc, char **argv)
         msg("\n");
     }
 
+#ifdef _WIN32
+    gWin->xclass(CODE_IPC_CLASS);       /* single instance: see above */
+#endif
     gWin->show();
 #ifdef _WIN32
+    SetPropA(fl_xid(gWin), CODE_IPC_PROP, (HANDLE)1);
+    Fl::add_handler(ipcHandler);
     /* After show(): fl_xid() only has a window to return once it is mapped.
      * Gives the comdlg32 Open / Save dialogs an owner, so they are modal to
      * us instead of to the desktop -- see edit_filedlg.h. */
