@@ -24,6 +24,9 @@ the status bar.*
 - Trailing whitespace stripped on save (optional, on by default; Markdown
   keeps a two-space hard line break)
 - Smart Home, centre-on-find, re-indent on paste
+- Right-click menu (Cut / Copy / Paste / Delete); Tools / Format JSON
+  (Alt+J) pretty-prints the selection or the whole file with the Tab
+  setting, or puts the caret on the first error
 - Matching pairs: the bracket at the caret and its partner ( ) [ ] { } are
   outlined (red if unmatched), and in HTML / PHP both names of an element
 - Encodings: UTF-8, UTF-8 with BOM, ANSI (system code page) — detected on

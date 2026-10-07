@@ -49,6 +49,7 @@
 #include "fltk_ui/edit_code.h"
 #include "fltk_ui/edit_filedlg.h"
 #include "fltk_ui/edit_find.h"
+#include "fltk_ui/edit_json.h"
 #include "edit_settings.h"
 
 /* major.minor.patch -- bump the minor on a feature change, the third component
@@ -56,7 +57,7 @@
  * stamp beside it is the one that cannot lie: the compiler writes it, so a
  * title showing an old timestamp means the running exe is not the one you just
  * built. */
-#define CODEEDIT_VERSION "1.10"
+#define CODEEDIT_VERSION "1.11"
 
 #define MAX_DOCS   16
 #define MENU_H     25
@@ -1043,6 +1044,49 @@ static void cbGotoLine(Fl_Widget *, void *)
     ed->redraw();
 }
 
+/* ---- Tools ------------------------------------------------------------- */
+
+/* Format JSON: the selection if there is one, else the whole document, using
+ * the indent from Settings (Tab width / Indent with tab characters). Broken
+ * JSON is left untouched and the caret goes to the problem instead. One undo
+ * step either way. */
+static void cbFormatJson(Fl_Widget *, void *)
+{
+    CodeEditor *ed = curEd();
+    Fl_Text_Buffer *buf;
+    char *src, *out;
+    const char *why = 0;
+    int a, b, at = 0;
+
+    if (!ed) return;
+    buf = ed->buffer();
+    if (!buf->selection_position(&a, &b)) { a = 0; b = buf->length(); }
+    src = buf->text_range(a, b);
+    if (!src) return;
+    out = codeJsonFormat(src, b - a, codeIndent, codeUseTabs, &at, &why);
+    free(src);
+
+    if (!out) {
+        int pos = a + at, line = codeLineOfPos(buf, pos);
+        buf->unselect();
+        ed->insert_position(pos);
+        ed->show_insert_position();
+        ed->take_focus();
+        fl_alert("Not valid JSON: %s\n(line %d, column %d)", why, line,
+                 pos - buf->line_start(pos) + 1);
+        return;
+    }
+    ed->beginUndoGroup();
+    buf->replace(a, b, out);
+    ed->endUndoGroup();
+    free(out);
+    buf->unselect();
+    ed->insert_position(a);
+    ed->show_insert_position();
+    ed->take_focus();
+    ed->redraw();
+}
+
 /* ---- menu -------------------------------------------------------------- */
 
 static Fl_Menu_Item gMenu[] = {
@@ -1082,6 +1126,9 @@ static Fl_Menu_Item gMenu[] = {
          * binding lives dangerously next to Ctrl+W (Close). Alt is strict. */
         { "&Word Wrap", FL_ALT + 'z', cbWrap },
         { "Wrap at &Column...", 0, cbWrapCol },
+        { 0 },
+    { "&Tools", 0, 0, 0, FL_SUBMENU },
+        { "Format &JSON", FL_ALT + 'j', cbFormatJson },
         { 0 },
     { "E&ncoding", 0, 0, 0, FL_SUBMENU },
         { "UTF-8",          0, cbEnc, (void *)CODE_ENC_UTF8 },
@@ -1360,6 +1407,10 @@ int main(int argc, char **argv)
          * scaled by hand here -- textsize() is not geometry, so the tree walk
          * does not touch it. */
         editMenuBarStyle(gMenuBar, editDpi(11));
+        /* The editors' right-click menu gets the same items and, through
+         * codeContextLook, the bar's frame and font size. */
+        editMenuPadLevel(codeContextMenu);
+        codeContextLook = gMenuBar;
 
         gTabs = new CodeTabs(0, MENU_H, 760, 560 - MENU_H - STATUS_H);
         /* Flat, borderless tabs (edit_tabs.h): the row strip in color(), the
