@@ -12,6 +12,8 @@ the status bar.*
 ## Features
 
 - Tabs, Find / Replace (Enter = Find Next), Go to line, undo / redo
+- File / Reload (Ctrl+R) re-reads the file from disk, asking first if it
+  has unsaved changes
 - Syntax highlighting: Bash / sh, Batch (`.bat` / `.cmd`), C / C++ (also
   `.glsl` / `.vert` / `.frag` / `.inl` / `.rc`), CSS, HTML (with `<script>` /
   `<style>`), INI (`.ini` / `.cfg` / `.inf`), Java, JavaScript (also `.ts` /

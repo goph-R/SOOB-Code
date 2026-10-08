@@ -57,7 +57,7 @@
  * stamp beside it is the one that cannot lie: the compiler writes it, so a
  * title showing an old timestamp means the running exe is not the one you just
  * built. */
-#define CODEEDIT_VERSION "1.11"
+#define CODEEDIT_VERSION "1.12"
 
 #define MAX_DOCS   16
 #define MENU_H     25
@@ -439,6 +439,39 @@ static void cbOpen(Fl_Widget *, void *)
         codeLastDirFromPath(&gSet, picked);
         if (!addDoc(picked)) codeSettingsSave(&gSet);
     }
+}
+
+/* Re-read the active document from disk -- for a file another program has
+ * changed. Asks first if that would throw away unsaved edits. Keeps the
+ * language (it may have been picked by hand) and, as near as the new text
+ * allows, the caret; the undo history goes, as on a fresh open. */
+static void cbReload(Fl_Widget *, void *)
+{
+    int i = currentIndex(), lang, pos, len;
+    CodeEditor *ed;
+
+    if (i < 0) return;
+    ed = gDocs[i].ed;
+    if (!gDocs[i].path[0]) { fl_beep(); return; }       /* untitled: nothing to read */
+    if (ed->dirty() &&
+        fl_choice("Reload\n%s\nfrom disk and lose your changes?",
+                  "Cancel", "Reload", 0, baseName(gDocs[i].path)) != 1)
+        return;
+
+    lang = ed->language();
+    pos  = ed->insert_position();
+    if (ed->loadFile(gDocs[i].path) != 0) {
+        fl_alert("Could not reload\n%s", gDocs[i].path);
+        return;
+    }
+    ed->language(lang);
+    len = ed->buffer()->length();
+    if (pos > len) pos = len;
+    ed->insert_position(ed->buffer()->utf8_align(pos));
+    ed->show_insert_position();
+    ed->take_focus();
+    ed->redraw();
+    refreshLabel(i);
 }
 
 static void cbSave  (Fl_Widget *, void *) { saveDoc(currentIndex(), 0); }
@@ -1093,6 +1126,7 @@ static Fl_Menu_Item gMenu[] = {
     { "&File", 0, 0, 0, FL_SUBMENU },
         { "&New",        FL_CTRL + 'n', cbNew    },
         { "&Open...",    FL_CTRL + 'o', cbOpen   },
+        { "&Reload",     FL_CTRL + 'r', cbReload },
         { "&Save",       FL_CTRL + 's', cbSave   },
         { "Save &As...", 0,             cbSaveAs, 0, FL_MENU_DIVIDER },
         { "Recent &Files", 0, 0, 0, FL_SUBMENU | FL_MENU_DIVIDER },
