@@ -21,8 +21,11 @@ set ENGINE=..\SOOB-Core
 set FLTK=%ENGINE%\vendor\fltk-1.3\FL
 set DC=C:\Dev-Cpp\bin
 
-if not exist raw\nul mkdir raw
-if not exist raw\obj\nul mkdir raw\obj
+REM ---- No "if exist" on a directory: the usual dir\nul test is a local
+REM ---- DOS quirk and misfires over the share this tree is built from,
+REM ---- printing "File not found". Just make them and bin the complaint.
+md raw     >nul
+md raw\obj >nul
 
 REM ---- -mwindows on the link: a GUI program, no console window.
 REM ---- -I%ENGINE% resolves the shared widgets ("fltk_ui/edit_code.h"),
