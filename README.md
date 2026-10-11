@@ -37,7 +37,12 @@ the status bar.*
 - Folders sidebar (View / Folders): add folders with File / Open Folder or
   the tree's right-click menu; double-click opens a file in a tab, or hands
   it to Windows if the editor cannot read it (those are drawn dimmed).
-  Hidden and system files are skipped; drag the edge to resize
+  Hidden and system files are skipped; drag the edge to resize. Refresh on
+  the right-click menu re-reads a folder that changed on disk
+- Find in Folder (Ctrl+Shift+F) searches the first folder in the sidebar and
+  everything under it. Double-click a result to open that file on the line;
+  Replace All asks once, then edits open tabs through their undo and the
+  rest on disk, keeping each file's encoding and line ending
 - Status bar (Ln/Col, language, line ending, encoding), recent files,
   word wrap, settings (`codeedit.ini` next to the exe)
 - Single instance: opening more files (e.g. F4 in Total Commander) adds tabs

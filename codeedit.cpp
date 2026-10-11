@@ -35,6 +35,7 @@
 #include <FL/Fl_Return_Button.H>
 #include <FL/Fl_Int_Input.H>
 #include <FL/Fl_Box.H>
+#include <FL/Fl_Hold_Browser.H>
 #ifdef _WIN32
 #include <FL/x.H>                  /* fl_xid(), for the file dialogs' owner */
 #endif
@@ -51,6 +52,7 @@
 #include "fltk_ui/edit_split.h"
 #include "fltk_ui/edit_shell.h"
 #include "fltk_ui/edit_folders.h"
+#include "fltk_ui/edit_grep.h"
 #include "fltk_ui/edit_find.h"
 #include "fltk_ui/edit_json.h"
 #include "fltk_ui/edit_place.h"
@@ -61,7 +63,7 @@
  * stamp beside it is the one that cannot lie: the compiler writes it, so a
  * title showing an old timestamp means the running exe is not the one you just
  * built. */
-#define CODEEDIT_VERSION "1.15"
+#define CODEEDIT_VERSION "1.16"
 
 #define MAX_DOCS   16
 #define MENU_H     25
@@ -90,6 +92,7 @@ static int               gSideW   = 0;  /* sidebar width, REAL pixels */
 static int               gSideShow = 1;
 static int              gUntitledSeq = 1;
 static Fl_Double_Window *gFindWin;      /* defined with the Find UI below */
+static Fl_Double_Window *gGrepWin;      /* ...and with Find in Folder */
 static CodeSettings     gSet;           /* codeedit.ini, see edit_settings.h */
 static void recentNote(const char *path);
 static void findRetireStaleMsg(void);   /* defined with the Find UI below */
@@ -543,6 +546,7 @@ static void cbExit(Fl_Widget *, void *)
         gSet.foldersW    = gSideW;
         codeSettingsSave(&gSet);
         if (gFindWin) gFindWin->hide();   /* else Fl::run() never returns */
+        if (gGrepWin) gGrepWin->hide();   /* ...and the same for this one */
 #ifdef _WIN32
         ipcUnregister();
 #endif
@@ -893,23 +897,35 @@ static void syncFoldersItem(void)
 
 /* The tree's right-click menu. Same shape as the tab menu: a standalone
  * array padded once at startup, popped with the menu bar as its look. */
-enum { FOLD_M_OPEN, FOLD_M_REMOVE };
+enum { FOLD_M_OPEN, FOLD_M_REMOVE, FOLD_M_REFRESH };
 static Fl_Menu_Item gFoldMenu[] = {
     { "Open &Folder...", 0, 0, (void *)FOLD_M_OPEN },
-    { "&Remove Folder",  0, 0, (void *)FOLD_M_REMOVE },
+    { "&Remove Folder",  0, 0, (void *)FOLD_M_REMOVE, FL_MENU_DIVIDER },
+    { "Re&fresh",        0, 0, (void *)FOLD_M_REFRESH },
     { 0 }
 };
 
 static void cbFoldMenu(Fl_Tree_Item *it, void *)
 {
     const Fl_Menu_Item *m;
-    /* Remove needs something to walk up from. */
-    if (gTree->rootOf(it)) gFoldMenu[FOLD_M_REMOVE].activate();
-    else                   gFoldMenu[FOLD_M_REMOVE].deactivate();
+    /* Both need something to act on; Open Folder never does. */
+    if (gTree->rootOf(it)) {
+        gFoldMenu[FOLD_M_REMOVE].activate();
+        gFoldMenu[FOLD_M_REFRESH].activate();
+    } else {
+        gFoldMenu[FOLD_M_REMOVE].deactivate();
+        gFoldMenu[FOLD_M_REFRESH].deactivate();
+    }
     m = gFoldMenu->popup(Fl::event_x(), Fl::event_y(), 0, 0, codeContextLook);
     if (!m) return;
-    if ((int)(long)m->user_data() == FOLD_M_OPEN) cbOpenFolder(0, 0);
-    else                                          cbRemoveFolder(0, 0);
+    switch ((int)(long)m->user_data()) {
+    case FOLD_M_OPEN:    cbOpenFolder(0, 0);   break;
+    case FOLD_M_REMOVE:  cbRemoveFolder(0, 0); break;
+    /* `it` is still good here: Refresh is the one branch that does not
+       destroy the item it was handed -- Remove does, which is why that one
+       re-finds the selection for itself. */
+    case FOLD_M_REFRESH: gTree->refresh(it);   break;
+    }
 }
 
 /* ---- settings ---------------------------------------------------------- */
@@ -1337,6 +1353,234 @@ static void cbFormatJson(Fl_Widget *, void *)
 
 /* ---- menu -------------------------------------------------------------- */
 
+/* ---- Find in Folder -----------------------------------------------------
+ * Ctrl+Shift+F searches the first folder in the sidebar, recursively. The
+ * model half -- the walk, the matching, the text replace -- is edit_grep.h;
+ * this is the window over it.
+ */
+static Fl_Input         *gGrepFind, *gGrepRepl;
+static Fl_Check_Button  *gGrepCase;
+static Fl_Hold_Browser  *gGrepList;
+static Fl_Box           *gGrepMsg;
+static char              gGrepMsgText[160];
+static char              gGrepRoot[512];
+static CodeGrep          gGrep;                /* owns the current results */
+
+#define GREP_MAX_HITS 2000
+
+/* Hand the search the live text of anything open in a tab, so results match
+   what is on screen rather than what was last saved -- and so a file just
+   replaced in its buffer stops reporting the matches it no longer has.
+   Fl_Text_Buffer::text() mallocs; edit_grep.h frees it. */
+static char *grepOpenText(const char *path)
+{
+    int i;
+    for (i = 0; i < gDocCount; i++)
+        if (gDocs[i].path[0] && codePathEq(gDocs[i].path, path))
+            return gDocs[i].ed->buffer()->text();
+    return 0;
+}
+
+/* The folder searched: the first one in the sidebar, as asked. */
+static const char *grepFolder(void)
+{
+    Fl_Tree_Item *r = gTree ? gTree->root() : 0;
+    if (!r || r->children() < 1) return 0;
+    return CodeFolders::pathOf(r->child(0));
+}
+
+/* Paths are shown relative to the searched folder -- absolute ones are all
+   prefix and push the interesting part off the right of the list. */
+static const char *grepRel(const char *path)
+{
+    int n = (int)strlen(gGrepRoot);
+    if (n > 0 && !strncmp(path, gGrepRoot, (size_t)n)) {
+        const char *p = path + n;
+        while (*p == '/' || *p == '\\') p++;
+        if (*p) return p;
+    }
+    return path;
+}
+
+static void grepSay(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsprintf(gGrepMsgText, fmt, ap);
+    va_end(ap);
+    if (gGrepMsg) { gGrepMsg->label(gGrepMsgText); gGrepMsg->redraw(); }
+}
+
+static void grepFill(void)
+{
+    char row[800];
+    int i;
+    gGrepList->clear();
+    for (i = 0; i < gGrep.n; i++) {
+        sprintf(row, "%.300s:%d:  %.400s", grepRel(gGrep.hit[i].path),
+                gGrep.hit[i].lineNo, gGrep.hit[i].line);
+        gGrepList->add(row);
+    }
+    if (!gGrep.n)
+        grepSay("No matches.");
+    else
+        grepSay("%d match%s in %d file%s%s.", gGrep.n, gGrep.n == 1 ? "" : "es",
+                gGrep.files, gGrep.files == 1 ? "" : "s",
+                gGrep.truncated ? " -- list truncated" : "");
+}
+
+static void cbGrepFind(Fl_Widget *, void *)
+{
+    const char *needle = gGrepFind->value();
+    const char *dir    = grepFolder();
+
+    if (!dir)            { grepSay("No folder in the sidebar."); return; }
+    if (!needle || !*needle) { grepSay("Nothing to find."); return; }
+    copyStr(gGrepRoot, (int)sizeof(gGrepRoot), dir);
+    grepSay("Searching...");
+    Fl::flush();                       /* the only progress there is: say so
+                                          before a walk that can take a while
+                                          on a PII over a share */
+    codeGrepRun(&gGrep, dir, needle, gGrepCase->value(), 1, GREP_MAX_HITS);
+    grepFill();
+}
+
+/* Double-click a result: open that file and put the caret on the line. */
+static void cbGrepList(Fl_Widget *, void *)
+{
+    int row = gGrepList->value(), i;
+    CodeEditor *ed;
+
+    if (Fl::event_clicks() < 1) return;          /* single click: just select */
+    Fl::event_clicks(0);
+    if (row < 1 || row > gGrep.n) return;
+    if (!openOrShow(gGrep.hit[row - 1].path)) return;
+    i = currentIndex();
+    if (i < 0) return;
+    ed = gDocs[i].ed;
+    ed->insert_position(codeGotoLinePos(ed->buffer(), gGrep.hit[row - 1].lineNo));
+    ed->buffer()->unselect();
+    ed->show_insert_position();
+    ed->take_focus();
+    ed->redraw();
+}
+
+/* Replace in one file that is NOT open in a tab: on disk, keeping the
+   encoding and line ending codeReadText() found. Returns the count. */
+static int grepReplaceOnDisk(const char *path, const char *needle,
+                             const char *repl, int matchCase)
+{
+    int enc, crlf, n = 0;
+    char *text = codeReadText(path, &enc, &crlf);
+    char *out;
+    if (!text) return 0;
+    out = codeGrepReplace(text, needle, repl, matchCase, &n);
+    free(text);
+    if (!out) return 0;
+    if (codeWriteText(path, out, (int)strlen(out), enc, crlf) != 0) n = 0;
+    free(out);
+    return n;
+}
+
+static void cbGrepReplaceAll(Fl_Widget *, void *)
+{
+    const char *needle = gGrepFind->value();
+    const char *repl   = gGrepRepl->value();
+    int matchCase = gGrepCase->value();
+    int i, k, total = 0, touched = 0;
+
+    if (!gGrep.n)            { grepSay("Nothing to replace -- run Find first."); return; }
+    if (!needle || !*needle) return;
+    if (gGrep.truncated) {
+        grepSay("Too many matches to replace safely. Narrow the search.");
+        return;
+    }
+    /* The only brake there is: a file that is not open in a tab is rewritten
+       on disk with no undo behind it. */
+    if (fl_choice("Replace %d occurrence%s in %d file%s?", "Cancel", "Replace", 0,
+                  gGrep.n, gGrep.n == 1 ? "" : "s",
+                  gGrep.files, gGrep.files == 1 ? "" : "s") != 1)
+        return;
+
+    for (i = 0; i < gGrep.n; i++) {
+        const char *path = gGrep.hit[i].path;
+        int done = 0, open = -1;
+        /* One pass per FILE: the hit list has an entry per match, so skip
+           any path already dealt with. */
+        for (k = 0; k < i; k++)
+            if (codePathEq(gGrep.hit[k].path, path)) { done = 1; break; }
+        if (done) continue;
+
+        for (k = 0; k < gDocCount; k++)
+            if (codePathEq(gDocs[k].path, path)) { open = k; break; }
+
+        if (open >= 0) {
+            /* Open in a tab: through the buffer, so it joins that tab's undo
+               and stays unsaved until the user decides. */
+            CodeEditor *ed = gDocs[open].ed;
+            ed->beginUndoGroup();
+            total += codeReplaceAll(ed->buffer(), needle, repl, matchCase);
+            ed->endUndoGroup();
+            ed->redraw();
+            refreshLabel(open);
+        } else {
+            total += grepReplaceOnDisk(path, needle, repl, matchCase);
+        }
+        touched++;
+    }
+
+    /* Re-run, so the list shows what is true now rather than what was. */
+    codeGrepRun(&gGrep, gGrepRoot, needle, matchCase, 1, GREP_MAX_HITS);
+    grepFill();
+    grepSay("Replaced %d occurrence%s in %d file%s.", total, total == 1 ? "" : "s",
+            touched, touched == 1 ? "" : "s");
+}
+
+static void cbGrepClose(Fl_Widget *, void *) { if (gGrepWin) gGrepWin->hide(); }
+
+static void cbFindInFolder(Fl_Widget *, void *)
+{
+    const char *dir = grepFolder();
+    char title[600];
+
+    codeGrepOpenText = grepOpenText;
+    if (!gGrepWin) {
+        gGrepWin = new Fl_Double_Window(560, 360, "Find in Folder");
+        gGrepWin->begin();
+        gGrepFind = new Fl_Input(75, 10, 300, 24, "Find:");
+        gGrepFind->when(FL_WHEN_ENTER_KEY_ALWAYS);      /* Enter = Find */
+        gGrepFind->callback(cbGrepFind);
+        gGrepCase = new Fl_Check_Button(385, 10, 110, 24, "Match case");
+        gGrepRepl = new Fl_Input(75, 40, 300, 24, "Replace:");
+        gGrepList = new Fl_Hold_Browser(10, 74, 540, 220);
+        gGrepList->callback(cbGrepList);
+        /* Full width: FLTK does not clip a label to its widget, so a
+           message wider than the box paints over whatever is beside it and
+           survives the next redraw, which only repaints the box itself. */
+        gGrepMsg  = new Fl_Box(10, 300, 540, 22, gGrepMsgText);
+        gGrepMsg->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        { Fl_Button *b;
+          b = new Fl_Button( 10, 326,  90, 24, "Find");        b->callback(cbGrepFind);
+          b = new Fl_Button(105, 326, 110, 24, "Replace All");  b->callback(cbGrepReplaceAll);
+          b = new Fl_Button(470, 326,  80, 24, "Close");        b->callback(cbGrepClose);
+        }
+        gGrepWin->end();
+        editDpiScaleTree(gGrepWin);
+        gGrepWin->callback(cbGrepClose);
+    }
+    if (!dir) {
+        grepSay("Add a folder to the sidebar first.");
+    } else {
+        copyStr(gGrepRoot, (int)sizeof(gGrepRoot), dir);
+        sprintf(title, "Find in Folder -- %.500s", baseName(gGrepRoot));
+        gGrepWin->copy_label(title);
+        grepSay("Folder: %.48s", baseName(gGrepRoot));
+    }
+    if (!gGrepWin->shown()) editPlaceDialog(gGrepWin);
+    gGrepWin->show();
+    gGrepFind->take_focus();
+}
+
 static Fl_Menu_Item gMenu[] = {
     { "&File", 0, 0, 0, FL_SUBMENU },
         { "&New",        FL_CTRL + 'n', cbNew    },
@@ -1368,6 +1612,10 @@ static Fl_Menu_Item gMenu[] = {
         { "&Find...",     FL_CTRL + 'f', cbFind     },
         { "Find &Next",   FL_F + 3,      cbFindNext },
         { "&Replace...",  FL_CTRL + 'h', cbReplace  },
+        /* Ctrl+Shift+F. Fl::test_shortcut() rejects a shortcut whose SHIFT
+           is required but absent, so this cannot be reached by a plain
+           Ctrl+F -- unlike the reverse, which is why View uses Alt+Z. */
+        { "Find in &Folder...", FL_CTRL + FL_SHIFT + 'f', cbFindInFolder },
         { "&Go to line...", FL_CTRL + 'g', cbGotoLine, 0, FL_MENU_DIVIDER },
         { "Se&ttings...", 0, cbSettings },
         { 0 },
