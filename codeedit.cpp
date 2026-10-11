@@ -48,8 +48,12 @@
 #include "fltk_ui/edit_tabs.h"
 #include "fltk_ui/edit_code.h"
 #include "fltk_ui/edit_filedlg.h"
+#include "fltk_ui/edit_split.h"
+#include "fltk_ui/edit_shell.h"
+#include "fltk_ui/edit_folders.h"
 #include "fltk_ui/edit_find.h"
 #include "fltk_ui/edit_json.h"
+#include "fltk_ui/edit_place.h"
 #include "edit_settings.h"
 
 /* major.minor.patch -- bump the minor on a feature change, the third component
@@ -57,12 +61,16 @@
  * stamp beside it is the one that cannot lie: the compiler writes it, so a
  * title showing an old timestamp means the running exe is not the one you just
  * built. */
-#define CODEEDIT_VERSION "1.12"
+#define CODEEDIT_VERSION "1.15"
 
 #define MAX_DOCS   16
 #define MENU_H     25
 #define TABROW_H   30         /* tab row incl. the strip above the tabs */
 #define STATUS_H   22         /* status bar */
+#define FOLD_W_DEF 200        /* Folders sidebar, width when the ini has none */
+#define FOLD_W_MIN 110        /* ...and the narrowest the splitter may make it */
+#define TABS_W_MIN 240        /* never squeeze the tab row below this */
+#define SPLIT_W     5         /* the drag bar between them */
 
 typedef struct CodeDoc {
     CodeEditor *ed;
@@ -76,6 +84,10 @@ static CodeDoc          gDocs[MAX_DOCS];
 static int              gDocCount = 0;
 static Fl_Double_Window *gWin;
 static CodeTabs         *gTabs;
+static CodeFolders      *gTree;         /* the Folders sidebar, 0 until built */
+static CodeSplitter     *gSplit;
+static int               gSideW   = 0;  /* sidebar width, REAL pixels */
+static int               gSideShow = 1;
 static int              gUntitledSeq = 1;
 static Fl_Double_Window *gFindWin;      /* defined with the Find UI below */
 static CodeSettings     gSet;           /* codeedit.ini, see edit_settings.h */
@@ -137,6 +149,7 @@ static int codeAskInt(const char *title, const char *prompt, int def, int *out)
     sprintf(buf, "%d", def);
     in->value(buf);
     w->set_modal();
+    editPlaceDialog(w);
     w->show();
     /* After show(): take_focus() sends FL_FOCUS, and the selection has to be
      * set after that, not before, or the focus handler would drop it. */
@@ -483,6 +496,28 @@ static void cbTabClose(Fl_Widget *w, void *)
     closeDoc(docIndexOf(w));
 }
 
+/* A tab's right-click menu. Deliberately no Close: you right-click a tab to
+ * find out where the file lives, and a Close one row away from that would be
+ * a misclick waiting to happen -- the X and middle-click already close.
+ * The paths are absolute already: the dialogs return them that way and
+ * command-line names go through ipcFullPath(). Grayed out on an untitled tab. */
+static Fl_Menu_Item gTabMenu[] = {
+    { "Copy &absolute path", 0, 0, 0 },
+    { 0 }
+};
+
+static void cbTabMenu(Fl_Widget *w, void *)
+{
+    int i = docIndexOf(w);
+    const char *path;
+    if (i < 0) return;
+    path = gDocs[i].path;
+    if (path[0]) gTabMenu[0].activate(); else gTabMenu[0].deactivate();
+    if (gTabMenu->popup(Fl::event_x(), Fl::event_y(), 0, 0, codeContextLook) ==
+        &gTabMenu[0])
+        Fl::copy(path, (int)strlen(path), 1);
+}
+
 static void cbClose (Fl_Widget *, void *)
 {
     int i = currentIndex();
@@ -504,6 +539,8 @@ static void cbExit(Fl_Widget *, void *)
             gSet.winW = gWin->w();
             gSet.winH = gWin->h();
         }
+        gSet.foldersShow = gSideShow;
+        gSet.foldersW    = gSideW;
         codeSettingsSave(&gSet);
         if (gFindWin) gFindWin->hide();   /* else Fl::run() never returns */
 #ifdef _WIN32
@@ -701,6 +738,180 @@ static void cbRecent(Fl_Widget *, void *v)
     }
 }
 
+/* ---- Folders sidebar ----------------------------------------------------
+ * Layout is one routine. Everything that can change the sidebar -- the
+ * splitter, the View toggle, the window growing -- ends up in layoutSide(),
+ * so there is exactly one place that knows where the three widgets go.
+ */
+static void syncFoldersItem(void);
+
+static void layoutSide(void)
+{
+    int top = editDpi(MENU_H);
+    int bot = gWin->h() - editDpi(STATUS_H);
+    int gw  = editDpi(SPLIT_W);
+
+    if (!gTree) return;
+    if (gSideShow) {
+        gTree->resize(0, top, gSideW, bot - top);
+        gSplit->resize(gSideW, top, gw, bot - top);
+        gTree->show();
+        gSplit->show();
+        gTabs->resize(gSideW + gw, top, gWin->w() - gSideW - gw, bot - top);
+    } else {
+        /* Hidden widgets are skipped by draw() and by Fl_Group::handle(), so
+         * they are simply left where they are. Resizing them to zero width
+         * instead would hand Fl_Tree::calc_dimensions() a negative inner
+         * width to divide by. */
+        gTree->hide();
+        gSplit->hide();
+        gWin->cursor(FL_CURSOR_DEFAULT);   /* the bar may have vanished from
+                                              under the pointer, and then no
+                                              FL_LEAVE is ever delivered */
+        gTabs->resize(0, top, gWin->w(), bot - top);
+    }
+    /* The group caches every child's rectangle for proportional resizing;
+     * without this the next window resize interpolates from the old ones. */
+    gWin->init_sizes();
+    gWin->redraw();
+}
+
+static void cbSplitDrag(int leftW, void *)
+{
+    int lo = editDpi(FOLD_W_MIN);
+    int hi = gWin->w() - editDpi(SPLIT_W) - editDpi(TABS_W_MIN);
+    if (hi < lo) hi = lo;
+    if (leftW < lo) leftW = lo;
+    if (leftW > hi) leftW = hi;
+    /* FL_DRAG fires per motion event and layoutSide() resizes every open
+     * editor, so going nowhere must cost nothing. */
+    if (leftW == gSideW) return;
+    gSideW = leftW;
+    /* Mirrored into the settings but NOT written: an ini rewrite per mouse
+       motion would be unbearable on a PII. Whoever saves next -- the View
+       toggle, Settings, Exit -- picks up the current width. */
+    gSet.foldersW = gSideW;
+    layoutSide();
+}
+
+/* Opening a document from inside the tree's handle() would create an
+ * Fl_Text_Display, move the focus and possibly raise an fl_alert while
+ * Fl::pushed() still points at the tree. Defer it by one event loop turn --
+ * the same trick the single-instance receiver uses for the same reason. */
+static char gFoldPending[600];
+
+static void foldOpenLater(void *)
+{
+    if (!gFoldPending[0]) return;
+    openOrShow(gFoldPending);
+    gFoldPending[0] = '\0';
+}
+
+static void cbFoldActivate(Fl_Tree_Item *it, void *)
+{
+    const char *path = CodeFolders::pathOf(it);
+    if (!path || CodeFolders::isDirOf(it)) return;
+    if (!codeFileOpenableName(foldBaseName(path))) {
+        if (!codeShellOpen(path)) fl_alert("Windows could not open\n%s", path);
+        return;
+    }
+    copyStr(gFoldPending, (int)sizeof(gFoldPending), path);
+    Fl::add_timeout(0.0, foldOpenLater, 0);
+}
+
+/* Fl_Tree's own callback: the only place that catches every way an item can
+ * be opened -- the [+] icon, Enter, Right-arrow and our double-click. */
+static void cbFoldTree(Fl_Widget *w, void *)
+{
+    CodeFolders *t = (CodeFolders *)w;
+    if (t->callback_reason() == FL_TREE_REASON_OPENED)
+        t->populate(t->callback_item());
+}
+
+static void addFolder(const char *path)
+{
+    Fl_Tree_Item *it;
+    if (!gTree || !path || !*path) return;
+    if (gSet.nFolders >= CODE_MAX_FOLDERS) {
+        fl_alert("The sidebar already lists %d folders.", CODE_MAX_FOLDERS);
+        return;
+    }
+    it = gTree->addRoot(path);
+    if (!it) return;
+    gTree->open(it);                      /* docallback 1 -> populate */
+    gTree->redraw();
+    if (codeFolderAdd(&gSet, path)) codeSettingsSave(&gSet);
+    if (!gSideShow) { gSideShow = 1; layoutSide(); syncFoldersItem(); }
+}
+
+static void cbOpenFolder(Fl_Widget *, void *)
+{
+    char picked[512], dirbuf[512];
+    if (!codeFolderDialog(picked, (int)sizeof(picked),
+                          currentDir(dirbuf, (int)sizeof(dirbuf))))
+        return;
+    addFolder(picked);
+}
+
+/* Removes the root CONTAINING the selection, and only from the list -- the
+ * folder itself is never touched. */
+static void cbRemoveFolder(Fl_Widget *, void *)
+{
+    Fl_Tree_Item *sel, *root;
+    const char *path;
+    char keep[512];
+
+    if (!gTree) return;
+    sel = gTree->first_selected_item();
+    root = gTree->rootOf(sel);
+    if (!root) {
+        fl_alert("Select a folder in the sidebar first.");
+        return;
+    }
+    path = CodeFolders::pathOf(root);
+    copyStr(keep, (int)sizeof(keep), path ? path : "");
+    gTree->removeRoot(root);              /* frees the subtree's FoldItems */
+    if (keep[0] && codeFolderRemove(&gSet, keep)) codeSettingsSave(&gSet);
+}
+
+static void cbFolders(Fl_Widget *, void *)
+{
+    gSideShow = !gSideShow;
+    gSet.foldersShow = gSideShow;
+    layoutSide();
+    syncFoldersItem();
+    codeSettingsSave(&gSet);
+}
+
+static void syncFoldersItem(void)
+{
+    Fl_Menu_Item *it;
+    if (!gMenuBar) return;
+    it = (Fl_Menu_Item *)gMenuBar->find_item(cbFolders);
+    if (it) editMenuCheck(it, gSideShow);
+}
+
+/* The tree's right-click menu. Same shape as the tab menu: a standalone
+ * array padded once at startup, popped with the menu bar as its look. */
+enum { FOLD_M_OPEN, FOLD_M_REMOVE };
+static Fl_Menu_Item gFoldMenu[] = {
+    { "Open &Folder...", 0, 0, (void *)FOLD_M_OPEN },
+    { "&Remove Folder",  0, 0, (void *)FOLD_M_REMOVE },
+    { 0 }
+};
+
+static void cbFoldMenu(Fl_Tree_Item *it, void *)
+{
+    const Fl_Menu_Item *m;
+    /* Remove needs something to walk up from. */
+    if (gTree->rootOf(it)) gFoldMenu[FOLD_M_REMOVE].activate();
+    else                   gFoldMenu[FOLD_M_REMOVE].deactivate();
+    m = gFoldMenu->popup(Fl::event_x(), Fl::event_y(), 0, 0, codeContextLook);
+    if (!m) return;
+    if ((int)(long)m->user_data() == FOLD_M_OPEN) cbOpenFolder(0, 0);
+    else                                          cbRemoveFolder(0, 0);
+}
+
 /* ---- settings ---------------------------------------------------------- */
 static void applySettings(void)
 {
@@ -753,6 +964,7 @@ static void cbSettings(Fl_Widget *, void *)
     /* Modal, driven by Fl::readqueue(): widgets without a callback of their
      * own are queued when activated. Closing the window just hides it. */
     w->set_modal();
+    editPlaceDialog(w);
     w->show();
     while (w->shown()) {
         Fl_Widget *o = Fl::readqueue();
@@ -1052,6 +1264,9 @@ static void openFindWindow(int withReplace)
     gReplIn->activate();
     findSayClear();                  /* a fresh window starts with no verdict */
     if (!withReplace) gFindIn->take_focus();
+    /* Centred each time it is opened, but not while it is up: Ctrl+F with
+     * the window already open must not yank it from where it was dragged. */
+    if (!gFindWin->shown()) editPlaceDialog(gFindWin);
     gFindWin->show();
     gFindIn->take_focus();
 }
@@ -1129,6 +1344,8 @@ static Fl_Menu_Item gMenu[] = {
         { "&Reload",     FL_CTRL + 'r', cbReload },
         { "&Save",       FL_CTRL + 's', cbSave   },
         { "Save &As...", 0,             cbSaveAs, 0, FL_MENU_DIVIDER },
+        { "Open &Folder...", 0,         cbOpenFolder },
+        { "Remove Folder",   0,         cbRemoveFolder, 0, FL_MENU_DIVIDER },
         { "Recent &Files", 0, 0, 0, FL_SUBMENU | FL_MENU_DIVIDER },
             { gRecentLabel[0], 0, cbRecent, (void *)0, FL_MENU_INVISIBLE },
             { gRecentLabel[1], 0, cbRecent, (void *)1, FL_MENU_INVISIBLE },
@@ -1159,7 +1376,10 @@ static Fl_Menu_Item gMenu[] = {
          * CTRL to match exactly and treats SHIFT loosely, so a Ctrl+Shift+W
          * binding lives dangerously next to Ctrl+W (Close). Alt is strict. */
         { "&Word Wrap", FL_ALT + 'z', cbWrap },
-        { "Wrap at &Column...", 0, cbWrapCol },
+        { "Wrap at &Column...", 0, cbWrapCol, 0, FL_MENU_DIVIDER },
+        /* No accelerator: Alt+F/E/V/T/N/L are the menu-bar titles and
+           Alt+Z / Alt+J are taken. */
+        { "&Folders", 0, cbFolders },
         { 0 },
     { "&Tools", 0, 0, 0, FL_SUBMENU },
         { "Format &JSON", FL_ALT + 'j', cbFormatJson },
@@ -1430,6 +1650,10 @@ int main(int argc, char **argv)
 
     gWin = new Fl_Double_Window(760, 560, winTitle);
     gWin->color(CODE_COL_BG);
+    /* Every dialog -- ours and fl_alert / fl_choice -- opens centred over
+     * this window and on screen (edit_place.h). */
+    editPlaceOwner = gWin;
+    fl_message_place(editPlaceDialog);
     gWin->begin();
     {
         gMenuBar = new EditMenuBar(0, 0, 760, MENU_H);
@@ -1441,12 +1665,26 @@ int main(int argc, char **argv)
          * scaled by hand here -- textsize() is not geometry, so the tree walk
          * does not touch it. */
         editMenuBarStyle(gMenuBar, editDpi(11));
-        /* The editors' right-click menu gets the same items and, through
-         * codeContextLook, the bar's frame and font size. */
+        /* The editors' and tabs' right-click menus get the same items and,
+         * through codeContextLook, the bar's frame and font size. */
         editMenuPadLevel(codeContextMenu);
+        editMenuPadLevel(gTabMenu);
+        editMenuPadLevel(gFoldMenu);
         codeContextLook = gMenuBar;
 
-        gTabs = new CodeTabs(0, MENU_H, 760, 560 - MENU_H - STATUS_H);
+        /* The sidebar's slot is left empty here: Fl_Tree lays out its own
+         * scrollbars, which is exactly what editDpiScaleTree() must not walk,
+         * so it is built after the walk at already-scaled coordinates -- the
+         * same rule that puts every CodeEditor there. The splitter is a plain
+         * widget and scales fine. */
+        gSplit = new CodeSplitter(FOLD_W_DEF, MENU_H,
+                                  SPLIT_W, 560 - MENU_H - STATUS_H);
+        gSplit->color(CODE_COL_TABROW);
+        gSplit->selection_color(CODE_COL_SEL);
+        gSplit->splitCallback(cbSplitDrag, 0);
+
+        gTabs = new CodeTabs(FOLD_W_DEF + SPLIT_W, MENU_H,
+                             760 - FOLD_W_DEF - SPLIT_W, 560 - MENU_H - STATUS_H);
         /* Flat, borderless tabs (edit_tabs.h): the row strip in color(), the
          * active tab in selection_color() -- the editor background, so it
          * merges into the page below -- with a white label. Inactive tabs are
@@ -1456,6 +1694,7 @@ int main(int argc, char **argv)
         gTabs->labelcolor(CODE_COL_FG);
         gTabs->firstTabAt(codeLineNumbers ? codeGutterWidth() : 0);  /* tabs start where the gutter ends */
         gTabs->closeCallback(cbTabClose, 0);
+        gTabs->menuCallback(cbTabMenu, 0);
         gTabs->end();
 
         gStatus = new CodeStatus(0, 560 - STATUS_H, 760, STATUS_H);
@@ -1464,7 +1703,25 @@ int main(int argc, char **argv)
     }
     gWin->end();
     editDpiScaleTree(gWin);             /* before addDoc: editors are added pre-scaled */
+
+    /* The tree, at already-scaled coordinates -- see the note in the block
+       above for why it cannot be built with the rest. */
+    gSideW    = gSet.foldersW > 0 ? gSet.foldersW : editDpi(FOLD_W_DEF);
+    gSideShow = gSet.foldersShow;
+    gWin->begin();
+    gTree = new CodeFolders(0, editDpi(MENU_H), gSideW,
+                            gWin->h() - editDpi(MENU_H) - editDpi(STATUS_H));
+    gWin->end();
+    codeFoldersTheme(gTree);            /* before the first addRoot(): items
+                                           copy the item colours at birth */
+    gTree->menuCallback(cbFoldMenu, 0);
+    gTree->activateCallback(cbFoldActivate, 0);
+    gTree->callback(cbFoldTree, 0);
+
     gWin->resizable(gTabs);
+    /* Without a floor the window can be dragged narrower than sidebar plus
+       splitter, and layoutSide() then hands the tabs a negative width. */
+    gWin->size_range(editDpi(FOLD_W_MIN + SPLIT_W + TABS_W_MIN), editDpi(220));
     gWin->callback(cbWinClose);         /* the X button must ask about unsaved work */
     syncRecentItems();
 
@@ -1478,6 +1735,14 @@ int main(int argc, char **argv)
         else
             gWin->size(gSet.winW, gSet.winH);
     }
+
+    {   /* The listed folders. Roots stay collapsed, so this is one cheap
+           item each and not a recursive walk of the disk at startup. */
+        int k;
+        for (k = 0; k < gSet.nFolders; k++) gTree->addRoot(gSet.folders[k]);
+    }
+    layoutSide();                       /* after the saved size is applied */
+    syncFoldersItem();
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-trace") == 0) continue;

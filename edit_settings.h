@@ -20,6 +20,9 @@
  *   last_dir=...         folder the Open / Save As dialog last used -- ONE
  *                        entry shared by both, so the two always agree
  *   recent1=...          recent files, most recent first
+ *   folders_show=1       the Folders sidebar is visible
+ *   folders_width=200    its width in real pixels
+ *   folder1=...          folders listed in the sidebar, in the order added
  */
 
 #include <stdio.h>
@@ -29,7 +32,8 @@
 #include <windows.h>
 #endif
 
-#define CODE_MAX_RECENT 8
+#define CODE_MAX_RECENT  8
+#define CODE_MAX_FOLDERS 8
 
 typedef struct CodeSettings {
     int  fontSize;
@@ -43,6 +47,10 @@ typedef struct CodeSettings {
     char lastDir[512];                    /* empty => never used a dialog */
     int  nRecent;
     char recent[CODE_MAX_RECENT][512];
+    int  foldersShow;                     /* the Folders sidebar is visible */
+    int  foldersW;                        /* its width, real pixels; 0 = default */
+    int  nFolders;
+    char folders[CODE_MAX_FOLDERS][512];
 } CodeSettings;
 
 static int codeClampInt(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -57,9 +65,10 @@ static void codeSettingsDefaults(CodeSettings *s)
     s->wrapCol     = 0;
     s->trimTrailing = 1;                  /* on by default, as asked */
     s->rememberWin = 1;
+    s->foldersShow = 1;                   /* visible until it is turned off */
+    s->foldersW    = 0;                   /* 0 => the built-in default width */
 }
 
-/* codeedit.ini in the exe's folder (the current folder off Windows). */
 static void codeSettingsPath(char *buf, int len)
 {
 #ifdef _WIN32
@@ -104,6 +113,16 @@ static void codeSettingsLoad(CodeSettings *s)
             strncpy(s->lastDir, v, sizeof(s->lastDir) - 1);
             s->lastDir[sizeof(s->lastDir) - 1] = '\0';
         }
+        /* Both scalars MUST be tested before the "folder" prefix below, or
+           that prefix match swallows them as folder paths -- the same shape
+           of trap the "recent" prefix has always had. */
+        else if (!strcmp(line, "folders_show"))  s->foldersShow = atoi(v) != 0;
+        else if (!strcmp(line, "folders_width")) s->foldersW = codeClampInt(atoi(v), 0, 4000);
+        else if (!strncmp(line, "folder", 6) && *v && s->nFolders < CODE_MAX_FOLDERS) {
+            strncpy(s->folders[s->nFolders], v, sizeof(s->folders[0]) - 1);
+            s->folders[s->nFolders][sizeof(s->folders[0]) - 1] = '\0';
+            s->nFolders++;
+        }
         else if (!strncmp(line, "recent", 6) && *v && s->nRecent < CODE_MAX_RECENT) {
             strncpy(s->recent[s->nRecent], v, sizeof(s->recent[0]) - 1);
             s->recent[s->nRecent][sizeof(s->recent[0]) - 1] = '\0';
@@ -135,6 +154,11 @@ static void codeSettingsSave(const CodeSettings *s)
         fprintf(f, "last_dir=%s\n", s->lastDir);
     for (i = 0; i < s->nRecent; i++)
         fprintf(f, "recent%d=%s\n", i + 1, s->recent[i]);
+    fprintf(f, "folders_show=%d\n", s->foldersShow);
+    if (s->foldersW > 0)
+        fprintf(f, "folders_width=%d\n", s->foldersW);
+    for (i = 0; i < s->nFolders; i++)
+        fprintf(f, "folder%d=%s\n", i + 1, s->folders[i]);
     fclose(f);
 }
 
@@ -163,6 +187,38 @@ static void codeRecentAdd(CodeSettings *s, const char *path)
  * Open / Save As. A bare filename has no folder in it and leaves the stored
  * one alone -- better to keep where the user last browsed than to replace it
  * with nothing. */
+/* Add a folder to the sidebar list. Unlike the recent list this APPENDS and
+   keeps the order the user added them in -- these are a workspace, not a
+   history, and having them shuffle would be maddening. Already listed, or
+   full, is a no-op; returns 1 if the list changed. */
+static int codeFolderAdd(CodeSettings *s, const char *path)
+{
+    int i;
+    if (!path || !*path || s->nFolders >= CODE_MAX_FOLDERS) return 0;
+    for (i = 0; i < s->nFolders; i++)
+        if (codePathEq(s->folders[i], path)) return 0;
+    strncpy(s->folders[s->nFolders], path, sizeof(s->folders[0]) - 1);
+    s->folders[s->nFolders][sizeof(s->folders[0]) - 1] = '\0';
+    s->nFolders++;
+    return 1;
+}
+
+static int codeFolderRemove(CodeSettings *s, const char *path)
+{
+    int i, k;
+    for (i = 0; i < s->nFolders; i++) {
+        if (!codePathEq(s->folders[i], path)) continue;
+        for (k = i; k < s->nFolders - 1; k++)
+            strcpy(s->folders[k], s->folders[k + 1]);
+        s->nFolders--;
+        s->folders[s->nFolders][0] = '\0';
+        return 1;
+    }
+    return 0;
+}
+
+/* codeedit.ini in the exe's folder (the current folder off Windows). */
+
 static void codeLastDirFromPath(CodeSettings *s, const char *path)
 {
     const char *fwd, *back, *sl;

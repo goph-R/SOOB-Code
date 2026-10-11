@@ -46,7 +46,7 @@ REM  libstdc++ and libwinpthread -- into the exe, so it needs no DLLs.
 REM  -mwindows: a GUI program, no console window.
 REM ----------------------------------------------------------------
 echo Linking...
-%GPP% %OBJDIR%\e10.o -o codeedit_w10.exe -L%FLTK%\lib_w10 -lfltk -lole32 -luuid -lcomctl32 -lcomdlg32 -lgdi32 -lwinspool -lwsock32 -static -mwindows
+%GPP% %OBJDIR%\e10.o -o codeedit_w10.exe -L%FLTK%\lib_w10 -lfltk -lshell32 -lole32 -luuid -lcomctl32 -lcomdlg32 -lgdi32 -lwinspool -lwsock32 -static -mwindows
 if errorlevel 1 goto error
 
 echo.
