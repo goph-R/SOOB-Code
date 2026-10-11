@@ -63,7 +63,7 @@
  * stamp beside it is the one that cannot lie: the compiler writes it, so a
  * title showing an old timestamp means the running exe is not the one you just
  * built. */
-#define CODEEDIT_VERSION "1.16"
+#define CODEEDIT_VERSION "1.16.1"
 
 #define MAX_DOCS   16
 #define MENU_H     25
@@ -1354,7 +1354,8 @@ static void cbFormatJson(Fl_Widget *, void *)
 /* ---- menu -------------------------------------------------------------- */
 
 /* ---- Find in Folder -----------------------------------------------------
- * Ctrl+Shift+F searches the first folder in the sidebar, recursively. The
+ * Ctrl+Shift+F searches the current PROJECT, recursively -- see
+ * grepFolder() for which of the sidebar's top-level folders that is. The
  * model half -- the walk, the matching, the text replace -- is edit_grep.h;
  * this is the window over it.
  */
@@ -1381,11 +1382,36 @@ static char *grepOpenText(const char *path)
     return 0;
 }
 
-/* The folder searched: the first one in the sidebar, as asked. */
+/* Which folder a search runs in -- the CURRENT PROJECT. The sidebar's
+ * top-level folders are the projects, so this is whichever of those the work
+ * in front of you belongs to, tried in order:
+ *
+ *   1. the project holding the file in the active tab -- you are editing it,
+ *      so that is the project you mean;
+ *   2. failing that, the project holding whatever is selected in the tree,
+ *      the only other thing that says "I am looking at this one";
+ *   3. failing both -- nothing open, nothing selected -- the first listed.
+ *
+ * The window title names the result, so a search never runs against a
+ * project you did not expect without saying which. */
 static const char *grepFolder(void)
 {
     Fl_Tree_Item *r = gTree ? gTree->root() : 0;
+    Fl_Tree_Item *sel;
+    const char *p;
+    int i, k;
+
     if (!r || r->children() < 1) return 0;
+
+    i = currentIndex();
+    if (i >= 0 && gDocs[i].path[0]) {
+        for (k = 0; k < r->children(); k++) {
+            p = CodeFolders::pathOf(r->child(k));
+            if (p && codeFileUnder(gDocs[i].path, p)) return p;
+        }
+    }
+    sel = gTree->rootOf(gTree->first_selected_item());
+    if (sel && (p = CodeFolders::pathOf(sel)) != 0) return p;
     return CodeFolders::pathOf(r->child(0));
 }
 
