@@ -20,7 +20,7 @@
  *   last_dir=...         folder the Open / Save As dialog last used -- ONE
  *                        entry shared by both, so the two always agree
  *   recent1=...          recent files, most recent first
- *   folders_show=1       the Folders sidebar is visible
+ *   folders_show=0       the Folders sidebar is visible (off by default)
  *   folders_width=200    its width in real pixels
  *   folder1=...          folders listed in the sidebar, in the order added
  */
@@ -65,7 +65,12 @@ static void codeSettingsDefaults(CodeSettings *s)
     s->wrapCol     = 0;
     s->trimTrailing = 1;                  /* on by default, as asked */
     s->rememberWin = 1;
-    s->foldersShow = 1;                   /* visible until it is turned off */
+    /* Hidden until asked for: a fresh editor opens on the file you double
+       clicked, not on a sidebar listing nothing. File / Open Folder brings it
+       back and reveals it by itself, so nothing is stranded. Only a FIRST run
+       sees this -- folders_show is written on every save, so anyone who has
+       run the editor already keeps whatever they had. */
+    s->foldersShow = 0;
     s->foldersW    = 0;                   /* 0 => the built-in default width */
 }
 
