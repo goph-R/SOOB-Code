@@ -63,7 +63,7 @@
  * stamp beside it is the one that cannot lie: the compiler writes it, so a
  * title showing an old timestamp means the running exe is not the one you just
  * built. */
-#define CODEEDIT_VERSION "1.19"
+#define CODEEDIT_VERSION "1.20"
 
 #define MAX_DOCS   16
 #define MENU_H     25
@@ -1503,12 +1503,14 @@ static void cbFormatJson(Fl_Widget *, void *)
 
 /* ---- Find in Folder -----------------------------------------------------
  * Ctrl+Shift+F searches the current PROJECT, recursively -- see
- * grepFolder() for which of the sidebar's top-level folders that is. The
+ * grepFolder() for which of the sidebar's top-level folders that is. With
+ * All ticked it searches every folder the sidebar lists instead, which is
+ * the same search and the same Replace All over a wider set of files. The
  * model half -- the walk, the matching, the text replace -- is edit_grep.h;
  * this is the window over it.
  */
 static Fl_Input         *gGrepFind, *gGrepRepl;
-static Fl_Check_Button  *gGrepCase;
+static Fl_Check_Button  *gGrepCase, *gGrepAll;
 static Fl_Hold_Browser  *gGrepList;
 static Fl_Box           *gGrepMsg;
 static char              gGrepMsgText[160];
@@ -1563,11 +1565,56 @@ static const char *grepFolder(void)
     return CodeFolders::pathOf(r->child(0));
 }
 
-/* Paths are shown relative to the searched folder -- absolute ones are all
-   prefix and push the interesting part off the right of the list. */
-static const char *grepRel(const char *path)
+/* Every top-level folder in the sidebar -- what All searches -- minus any
+ * that is already inside another listed one. Listing both X:\Projects and
+ * X:\Projects\SOOB-Code is perfectly reasonable, but walking both would
+ * report every hit under SOOB-Code twice, and then Replace All would count
+ * each of them twice. edit_grep.h cannot notice that for us: two walks have
+ * no idea they met the same file. codeFileUnder() compares on a separator
+ * boundary, so X:\Projects does not swallow X:\Projects2.
+ *
+ * The pointers are the tree's own and stay valid only while it does. Use
+ * them and drop them; never keep them across anything that could remove a
+ * folder. */
+static int grepRoots(const char **out, int maxN)
 {
-    int n = (int)strlen(gGrepRoot);
+    Fl_Tree_Item *r = gTree ? gTree->root() : 0;
+    const char *p, *q;
+    int k, j, nested, n = 0;
+
+    if (!r) return 0;
+    for (k = 0; k < r->children() && n < maxN; k++) {
+        p = CodeFolders::pathOf(r->child(k));
+        if (!p || !*p) continue;
+        nested = 0;
+        for (j = 0; j < r->children() && !nested; j++)
+            if (j != k && (q = CodeFolders::pathOf(r->child(j))) != 0)
+                nested = codeFileUnder(p, q);
+        if (!nested) out[n++] = p;
+    }
+    return n;
+}
+
+/* Paths are shown relative to the folder they were found in -- absolute ones
+ * are all prefix and push the interesting part off the right of the list.
+ *
+ * With `nr` roots (All), the folder's own NAME is kept and only what is above
+ * it is cut: "SOOB-Code\codeedit.cpp". A bare "codeedit.cpp" in a list drawn
+ * from five projects would not say which one it came from, and that is the
+ * one thing the All list has to make obvious. */
+static const char *grepRel(const char *path, const char *const *roots, int nr)
+{
+    const char *base;
+    int k, n;
+
+    for (k = 0; k < nr; k++) {
+        if (!codeFileUnder(path, roots[k])) continue;
+        base = baseName(roots[k]);
+        return (*base && base > roots[k]) ? path + (base - roots[k]) : path;
+    }
+    if (nr) return path;                      /* All: not under any of them */
+
+    n = (int)strlen(gGrepRoot);
     if (n > 0 && !strncmp(path, gGrepRoot, (size_t)n)) {
         const char *p = path + n;
         while (*p == '/' || *p == '\\') p++;
@@ -1587,11 +1634,15 @@ static void grepSay(const char *fmt, ...)
 
 static void grepFill(void)
 {
+    const char *roots[CODE_MAX_FOLDERS];
     char row[800];
-    int i;
+    int i, nr = 0;
+
+    /* Once for the whole list, not once per row: this walks the tree. */
+    if (gGrepAll && gGrepAll->value()) nr = grepRoots(roots, CODE_MAX_FOLDERS);
     gGrepList->clear();
     for (i = 0; i < gGrep.n; i++) {
-        sprintf(row, "%.300s:%d:  %.400s", grepRel(gGrep.hit[i].path),
+        sprintf(row, "%.300s:%d:  %.400s", grepRel(gGrep.hit[i].path, roots, nr),
                 gGrep.hit[i].lineNo, gGrep.hit[i].line);
         gGrepList->add(row);
     }
@@ -1603,6 +1654,36 @@ static void grepFill(void)
                 gGrep.truncated ? " -- list truncated" : "");
 }
 
+/* The one place a search actually runs -- Find and the re-run after Replace
+ * All both come through here, so the two can never disagree about what was
+ * searched. Returns how many folders were walked.
+ *
+ * All stops the moment the cap is reached: edit_grep.h measures maxHits
+ * against the running total, so once `truncated` is set every further folder
+ * could only add to a list that is already short of the truth -- and walking
+ * them would cost minutes on a share for nothing. */
+static int grepRunNow(const char *needle, int matchCase)
+{
+    const char *roots[CODE_MAX_FOLDERS];
+    int n, k;
+
+    grepSay("Searching...");
+    Fl::flush();                       /* the only progress there is: say so
+                                          before a walk that can take a while
+                                          on a PII over a share */
+    if (!gGrepAll->value()) {
+        codeGrepRun(&gGrep, gGrepRoot, needle, matchCase, 1, GREP_MAX_HITS);
+        return 1;
+    }
+    n = grepRoots(roots, CODE_MAX_FOLDERS);
+    codeGrepFree(&gGrep);              /* frees and re-initialises */
+    for (k = 0; k < n; k++) {
+        if (gGrep.truncated) return k;
+        codeGrepAdd(&gGrep, roots[k], needle, matchCase, 1, GREP_MAX_HITS);
+    }
+    return n;
+}
+
 static void cbGrepFind(Fl_Widget *, void *)
 {
     const char *needle = gGrepFind->value();
@@ -1611,11 +1692,7 @@ static void cbGrepFind(Fl_Widget *, void *)
     if (!dir)            { grepSay("No folder in the sidebar."); return; }
     if (!needle || !*needle) { grepSay("Nothing to find."); return; }
     copyStr(gGrepRoot, (int)sizeof(gGrepRoot), dir);
-    grepSay("Searching...");
-    Fl::flush();                       /* the only progress there is: say so
-                                          before a walk that can take a while
-                                          on a PII over a share */
-    codeGrepRun(&gGrep, dir, needle, gGrepCase->value(), 1, GREP_MAX_HITS);
+    grepRunNow(needle, gGrepCase->value());
     grepFill();
 }
 
@@ -1675,10 +1752,26 @@ static void cbGrepReplaceAll(Fl_Widget *, void *)
         return;
     }
     /* The only brake there is: a file that is not open in a tab is rewritten
-       on disk with no undo behind it. */
-    if (fl_choice("Replace %d occurrence%s in %d file%s?", "Cancel", "Replace", 0,
-                  gGrep.n, gGrep.n == 1 ? "" : "s",
-                  gGrep.files, gGrep.files == 1 ? "" : "s") != 1)
+       on disk with no undo behind it. With All ticked the files can be spread
+       over projects the user has not looked at in weeks, so the question says
+       how many folders they are in -- the count of folders that actually HAVE
+       hits, not of folders searched. */
+    if (gGrepAll->value()) {
+        const char *roots[CODE_MAX_FOLDERS];
+        int nr = grepRoots(roots, CODE_MAX_FOLDERS), nf = 0;
+        for (k = 0; k < nr; k++)
+            for (i = 0; i < gGrep.n; i++)
+                if (codeFileUnder(gGrep.hit[i].path, roots[k])) { nf++; break; }
+        if (fl_choice("Replace %d occurrence%s in %d file%s, across %d folder%s?",
+                      "Cancel", "Replace", 0,
+                      gGrep.n, gGrep.n == 1 ? "" : "s",
+                      gGrep.files, gGrep.files == 1 ? "" : "s",
+                      nf, nf == 1 ? "" : "s") != 1)
+            return;
+    } else if (fl_choice("Replace %d occurrence%s in %d file%s?",
+                         "Cancel", "Replace", 0,
+                         gGrep.n, gGrep.n == 1 ? "" : "s",
+                         gGrep.files, gGrep.files == 1 ? "" : "s") != 1)
         return;
 
     for (i = 0; i < gGrep.n; i++) {
@@ -1709,18 +1802,42 @@ static void cbGrepReplaceAll(Fl_Widget *, void *)
     }
 
     /* Re-run, so the list shows what is true now rather than what was. */
-    codeGrepRun(&gGrep, gGrepRoot, needle, matchCase, 1, GREP_MAX_HITS);
+    grepRunNow(needle, matchCase);
     grepFill();
     grepSay("Replaced %d occurrence%s in %d file%s.", total, total == 1 ? "" : "s",
             touched, touched == 1 ? "" : "s");
 }
+
+/* The title and the message line are the only things that say WHERE a search
+ * will run, so they have to follow the All tick immediately -- not at the
+ * next Find, by which time the walk has already happened. */
+static void grepSayWhere(void)
+{
+    const char *roots[CODE_MAX_FOLDERS];
+    char title[600];
+    int nr;
+
+    if (!gGrepWin) return;
+    if (gGrepAll->value()) {
+        nr = grepRoots(roots, CODE_MAX_FOLDERS);
+        gGrepWin->copy_label("Find in Folder -- all folders");
+        if (nr < 1) grepSay("No folders in the sidebar.");
+        else        grepSay("All folders in the sidebar -- %d to search.", nr);
+        return;
+    }
+    if (!gGrepRoot[0]) { grepSay("Add a folder to the sidebar first."); return; }
+    sprintf(title, "Find in Folder -- %.500s", baseName(gGrepRoot));
+    gGrepWin->copy_label(title);
+    grepSay("Folder: %.48s", baseName(gGrepRoot));
+}
+
+static void cbGrepAll(Fl_Widget *, void *) { grepSayWhere(); }
 
 static void cbGrepClose(Fl_Widget *, void *) { if (gGrepWin) gGrepWin->hide(); }
 
 static void cbFindInFolder(Fl_Widget *, void *)
 {
     const char *dir = grepFolder();
-    char title[600];
 
     codeGrepOpenText = grepOpenText;
     if (!gGrepWin) {
@@ -1731,6 +1848,12 @@ static void cbFindInFolder(Fl_Widget *, void *)
         gGrepFind->callback(cbGrepFind);
         gGrepCase = new Fl_Check_Button(385, 10, 110, 24, "Match case");
         gGrepRepl = new Fl_Input(75, 40, 300, 24, "Replace:");
+        /* Under Match case, beside Replace: the two switches that change what
+           a Find does, in the one place the eye already goes. */
+        gGrepAll  = new Fl_Check_Button(385, 40, 160, 24, "All folders");
+        gGrepAll->callback(cbGrepAll);
+        gGrepAll->tooltip("Search every folder listed in the sidebar, "
+                          "not just the current one");
         gGrepList = new Fl_Hold_Browser(10, 74, 540, 220);
         gGrepList->callback(cbGrepList);
         /* Full width: FLTK does not clip a label to its widget, so a
@@ -1747,14 +1870,9 @@ static void cbFindInFolder(Fl_Widget *, void *)
         editDpiScaleTree(gGrepWin);
         gGrepWin->callback(cbGrepClose);
     }
-    if (!dir) {
-        grepSay("Add a folder to the sidebar first.");
-    } else {
-        copyStr(gGrepRoot, (int)sizeof(gGrepRoot), dir);
-        sprintf(title, "Find in Folder -- %.500s", baseName(gGrepRoot));
-        gGrepWin->copy_label(title);
-        grepSay("Folder: %.48s", baseName(gGrepRoot));
-    }
+    if (dir) copyStr(gGrepRoot, (int)sizeof(gGrepRoot), dir);
+    else     gGrepRoot[0] = '\0';
+    grepSayWhere();
     if (!gGrepWin->shown()) editPlaceDialog(gGrepWin);
     gGrepWin->show();
     gGrepFind->take_focus();

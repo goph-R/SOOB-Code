@@ -233,6 +233,35 @@ without testing by hand on Win98.
       `occApply()` is the one that clears, from the same per-editor
       `applySettings()` the font size and the gutter already go through.
 
+## Done in 1.20
+
+- [x] An **All folders** checkbox in Find in Folder: the same dialog, the
+      same Replace All, over every folder the sidebar lists instead of just
+      the current project.
+      `codeGrepAdd()` is the new half of edit_grep.h -- one more folder
+      searched INTO results that already exist. Everything accumulates:
+      `n`, `files`, `scanned`, and `maxHits` measured against the running
+      total, so the cap is a cap on the whole search and not one per folder.
+      The caller stops as soon as `truncated` is set; walking the rest would
+      only add to a list already short of the truth, and cost minutes on a
+      share for nothing. `codeGrepRun()` is now clear-then-add, so every
+      existing caller behaves exactly as before.
+      Overlapping folders are the APP's problem, because two walks cannot
+      tell they met the same file -- a file searched twice reports its
+      matches twice and Replace All would then count them twice.
+      `grepRoots()` drops any listed folder that sits inside another one,
+      on a `codeFileUnder()` separator boundary so `X:\Projects` does not
+      swallow `X:\Projects2`.
+      Results keep the folder's NAME as their prefix (`SOOB-Code\codeedit.cpp`)
+      rather than being relative to it. A bare `codeedit.cpp` in a list drawn
+      from five projects does not say which one it came from, and with All on
+      that is the one thing the list has to make obvious.
+      Find and the re-run after Replace All both go through `grepRunNow()`,
+      so the two can never disagree about what was searched. The confirm
+      counts the folders that actually HAVE hits -- with All on, the files
+      can be spread over projects not looked at in weeks, and that is the
+      number worth seeing before a disk write with no undo behind it.
+
 ## Ideas not asked for yet
 - A `-new` switch, or a Settings checkbox, for the odd time a second
   window is wanted.
