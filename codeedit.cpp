@@ -57,13 +57,14 @@
 #include "fltk_ui/edit_json.h"
 #include "fltk_ui/edit_place.h"
 #include "edit_settings.h"
+#include "edit_session.h"
 
 /* major.minor.patch -- bump the minor on a feature change, the third component
  * on a bug fix (and drop it again at the next feature). The __DATE__/__TIME__
  * stamp beside it is the one that cannot lie: the compiler writes it, so a
  * title showing an old timestamp means the running exe is not the one you just
  * built. */
-#define CODEEDIT_VERSION "1.20"
+#define CODEEDIT_VERSION "1.21"
 
 #define MAX_DOCS   16
 #define MENU_H     25
@@ -102,6 +103,10 @@ static Fl_Double_Window *gGrepWin;      /* ...and with Find in Folder */
 static CodeSettings     gSet;           /* codeedit.ini, see edit_settings.h */
 static void recentNote(const char *path);
 static void findRetireStaleMsg(void);   /* defined with the Find UI below */
+/* Reopening what was already open is not "you opened this": a restore must
+   not reorder Recent Files, and 16 restored tabs would otherwise rewrite the
+   ini 16 times before the window is even up. */
+static int  gRestoring = 0;
 static void revealInFolders(const char *path);  /* ...and with the sidebar */
 static void applySettings(void);        /* ...and with the Settings dialog */
 
@@ -456,6 +461,152 @@ static void closeDoc(int i)
     codeTrace("closeDoc: EXIT CLEAN");
 }
 
+/* ---- the session --------------------------------------------------------
+ *
+ * Hot exit, as Sublime does it: closing the window asks nothing and the next
+ * start puts the desk back, unsaved buffers included. Settings / Restore open
+ * files on start switches the whole thing off.
+ *
+ * The store is edit_session.h. What is here is the two halves that need the
+ * documents: reading the desk out of them, and building it back.
+ */
+static CodeSession gSes;                  /* the session being restored */
+static int gSesDoc[CODE_SES_MAXTABS];     /* which document each tab became */
+
+/* Everything on the desk, written where the next start will find it.
+ *
+ * Returns 0 if ANY part of it failed -- and then the new generation is thrown
+ * away and the old one left untouched, so a failed write loses nothing that
+ * was already safe. The caller must fall back to asking about unsaved files
+ * the old way: dropping them silently is the one outcome a feature whose
+ * whole promise is "your work comes back" must never produce. */
+static int sessionSave(void)
+{
+    const char *dirs[CODE_SES_MAXOPEN];
+    CodeSession old;
+    char dir[600];
+    int i, k, n, ok = 1;
+
+    codeSesLoad(&old);                    /* for its generation letter only */
+    codeSesInit(&gSes);
+    gSes.gen = codeSesNextGen(old.gen);
+    codeSesDir(dir, (int)sizeof(dir));
+    if (dir[0]) fl_mkdir(dir, 0700);      /* already there: fails, which is fine */
+
+    for (i = 0; i < gDocCount && gSes.nTabs < CODE_SES_MAXTABS; i++) {
+        CodeDoc *d = &gDocs[i];
+        CodeSesTab *t = &gSes.tab[gSes.nTabs];
+        int dirty = d->ed->dirty();
+
+        /* An untitled tab with nothing in it is not a thing to put back. */
+        if (!d->path[0] && !dirty) continue;
+        memset(t, 0, sizeof(*t));
+        copyStr(t->path, (int)sizeof(t->path), d->path);
+        t->caret = d->ed->insert_position();
+        t->top   = d->ed->topLine();
+        t->enc   = d->ed->encoding();
+        t->crlf  = d->ed->crlf();
+        t->lang  = d->ed->language();
+        if (dirty || !d->path[0]) {
+            char *text = d->ed->text();
+            if (!text || !codeSesWriteStash(gSes.gen, gSes.nTabs, text,
+                                            t->stash, (int)sizeof(t->stash)))
+                ok = 0;                   /* its only copy did not reach disk */
+            free(text);
+        }
+        if (gTabs && gTabs->value() == (Fl_Widget *)d->ed) gSes.active = gSes.nTabs;
+        gSes.nTabs++;
+    }
+
+    if (gTree) {
+        n = gTree->openedDirs(dirs, CODE_SES_MAXOPEN);
+        for (k = 0; k < n; k++)
+            copyStr(gSes.open[gSes.nOpen++], 512, dirs[k]);
+    }
+
+    if (!ok || !codeSesSave(&gSes)) {
+        codeSesDropGen(gSes.gen);         /* the old desk is still on disk */
+        return 0;
+    }
+    codeSesDropGen(old.gen);              /* only now is it safe to let go */
+    return 1;
+}
+
+/* The caret and the scroll, one event loop turn after the window is up.
+ * Fl_Text_Display cannot place either until it knows how tall it is, and at
+ * restore time it does not: the window has not been shown yet. */
+static void sessionPlaceCarets(void *)
+{
+    int k, i, caret, len;
+
+    for (k = 0; k < gSes.nTabs; k++) {
+        i = gSesDoc[k];
+        if (i < 0 || i >= gDocCount) continue;
+        len   = gDocs[i].ed->buffer()->length();
+        caret = gSes.tab[k].caret;
+        if (caret > len) caret = len;     /* the file changed under us */
+        if (caret < 0)   caret = 0;
+        gDocs[i].ed->insert_position(gDocs[i].ed->buffer()->utf8_align(caret));
+        gDocs[i].ed->topLine(gSes.tab[k].top);   /* after the caret: that
+                                                    scrolls too */
+    }
+}
+
+/* Build the desk back. Called before the command line is opened, so a file
+ * passed on it lands on top of the restored tabs rather than instead. */
+static void sessionRestore(void)
+{
+    int k, active = -1;
+
+    if (!codeSesLoad(&gSes)) return;
+    gRestoring = 1;
+    for (k = 0; k < gSes.nTabs; k++) {
+        CodeSesTab *t = &gSes.tab[k];
+        CodeEditor *ed = 0;
+
+        gSesDoc[k] = -1;
+        if (t->stash[0]) {
+            /* Unsaved: the stash IS the document. Its path may still point at
+               a real file -- that file is the older text, and must not be the
+               one we show. */
+            char *text = codeSesReadStash(t->stash);
+            if (!text) continue;
+            ed = addDoc(0);
+            if (ed) {
+                int i = gDocCount - 1;
+                copyStr(gDocs[i].path, (int)sizeof(gDocs[i].path), t->path);
+                ed->text(text);
+                if (t->lang >= 0) ed->language(t->lang);
+                ed->encoding(t->enc);
+                ed->crlf(t->crlf);
+                ed->markDirty();          /* text() cleared it; it IS unsaved */
+                refreshLabel(i);
+            }
+            free(text);
+        } else if (t->path[0]) {
+            /* Probe first. addDoc() raises an fl_alert when a file will not
+               open, and a folder cleaned out since last time would then meet
+               the user with one modal dialog per tab before the window is
+               even up. A file that is gone has nothing to restore: drop the
+               tab and say nothing, which is what the file being gone means. */
+            FILE *probe = fl_fopen(t->path, "rb");
+            if (!probe) continue;
+            fclose(probe);
+            ed = addDoc(t->path);
+            if (ed && t->lang >= 0) ed->language(t->lang);
+        }
+        if (!ed) continue;
+        gSesDoc[k] = gDocCount - 1;
+        if (k == gSes.active) active = gDocCount - 1;
+    }
+    gRestoring = 0;
+
+    if (active >= 0 && gTabs) gTabs->value(gDocs[active].ed);
+    if (gTree)
+        for (k = 0; k < gSes.nOpen; k++) gTree->expandTo(gSes.open[k]);
+    if (gSes.nTabs) Fl::add_timeout(0.0, sessionPlaceCarets, 0);
+}
+
 static int quitAll(void)
 {
     int i;
@@ -575,7 +726,16 @@ static void ipcUnregister(void);           /* single instance, near main() */
 
 static void cbExit(Fl_Widget *, void *)
 {
-    if (quitAll()) {
+    /* Hot exit. quitAll() -- the per-file "save changes?" -- is skipped
+       entirely, because the whole point is that the work is kept, not
+       decided about. If the session could not be written, the old prompt is
+       still there to catch what would otherwise be lost. */
+    int go = gSet.restoreSession ? (sessionSave() || quitAll()) : quitAll();
+    if (go) {
+        /* Switched off: leave nothing behind that a later switch-on could
+           restore by surprise. Inside the branch, so a cancelled exit does
+           not quietly throw the last desk away. */
+        if (!gSet.restoreSession) codeSesClear();
         if (gSet.rememberWin) {
             gSet.winX = gWin->x();
             gSet.winY = gWin->y();
@@ -747,6 +907,8 @@ static void syncRecentItems(void)
 
 static void recentNote(const char *path)
 {
+    if (gRestoring) return;     /* see the declaration: a restore is not a
+                                   reason to reorder Recent Files */
     codeRecentAdd(&gSet, path);
     codeSettingsSave(&gSet);
     syncRecentItems();
@@ -1089,9 +1251,9 @@ static void applySettings(void)
 static void cbSettings(Fl_Widget *, void *)
 {
     char buf[16];
-    Fl_Double_Window *w = new Fl_Double_Window(340, 274, "Settings");
+    Fl_Double_Window *w = new Fl_Double_Window(340, 298, "Settings");
     Fl_Int_Input *font, *tab, *wrap;
-    Fl_Check_Button *tabs, *nums, *occ, *trim, *rem;
+    Fl_Check_Button *tabs, *nums, *occ, *trim, *rem, *ses;
     Fl_Return_Button *ok;
     Fl_Button *cancel;
     Fl_Box *hint;
@@ -1109,8 +1271,11 @@ static void cbSettings(Fl_Widget *, void *)
     trim = new Fl_Check_Button(16, 176, 310, 22,
                                "Remove trailing whitespace on save");
     rem  = new Fl_Check_Button(16, 200, 310, 22, "Remember window size and position");
-    ok     = new Fl_Return_Button(150, 238, 86, 26, "OK");
-    cancel = new Fl_Button(244, 238, 86, 26, "Cancel");
+    ses  = new Fl_Check_Button(16, 224, 310, 22, "Restore open files on start");
+    ses->tooltip("Closing the window keeps unsaved files instead of asking "
+                 "about them");
+    ok     = new Fl_Return_Button(150, 262, 86, 26, "OK");
+    cancel = new Fl_Button(244, 262, 86, 26, "Cancel");
     w->end();
     editDpiScaleTree(w);
 
@@ -1122,6 +1287,7 @@ static void cbSettings(Fl_Widget *, void *)
     occ->value(gSet.highlightWord);
     trim->value(gSet.trimTrailing);
     rem->value(gSet.rememberWin);
+    ses->value(gSet.restoreSession);
 
     /* Modal, driven by Fl::readqueue(): widgets without a callback of their
      * own are queued when activated. Closing the window just hides it. */
@@ -1141,6 +1307,10 @@ static void cbSettings(Fl_Widget *, void *)
             gSet.highlightWord = occ->value() ? 1 : 0;
             gSet.trimTrailing = trim->value() ? 1 : 0;
             gSet.rememberWin = rem->value() ? 1 : 0;
+            gSet.restoreSession = ses->value() ? 1 : 0;
+            /* Switched off: drop the desk now rather than leave it to be
+               restored by surprise if it is ever switched back on. */
+            if (!gSet.restoreSession) codeSesClear();
             applySettings();
             syncHighlightItem();      /* the View check follows the dialog */
             codeSettingsSave(&gSet);
@@ -2291,6 +2461,11 @@ int main(int argc, char **argv)
     layoutSide();                       /* after the saved size is applied */
     syncFoldersItem();
     syncHighlightItem();
+
+    /* The desk as it was left. Before the command line, so a file passed
+       there lands ON TOP of the restored tabs and ends up the active one --
+       opening codeedit on a file must still show you that file. */
+    if (gSet.restoreSession) sessionRestore();
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-trace") == 0) continue;

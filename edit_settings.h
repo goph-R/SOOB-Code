@@ -2,10 +2,13 @@
 #define EDIT_SETTINGS_H
 
 /*
- * edit_settings.h -- the code editor's settings, kept in codeedit.ini next to
- * the exe: plain key=value lines (no registry, works on Win98, and the editor
- * folder can be copied with its settings). Unknown keys are ignored and
- * missing ones keep their defaults, so the file can be hand-edited.
+ * edit_settings.h -- the code editor's settings, kept in codeedit.ini: plain
+ * key=value lines (no registry, works on Win98, and the file can be
+ * hand-edited). Unknown keys are ignored and missing ones keep their
+ * defaults.
+ *
+ * WHERE codeedit.ini LIVES -- see codeDataDir(), which the session store
+ * (edit_session.h) follows, so the two are never in different places.
  *
  *   font_size=14         code text, px at 100% display scale
  *   tab_width=4          indent width; also the display width of a tab char
@@ -16,6 +19,10 @@
  *   trim_trailing=1      strip trailing spaces / tabs from every line on
  *                        save (Markdown keeps a two-space hard line break)
  *   remember_window=1    restore the window size and position
+ *   restore_session=1    put the open files, their carets and the expanded
+ *                        folders back on start -- unsaved buffers included,
+ *                        which is why closing the window asks nothing. The
+ *                        files themselves live in session\ (edit_session.h)
  *   window=x,y,w,h       last window rectangle (real pixels)
  *   last_dir=...         folder the Open / Save As dialog last used -- ONE
  *                        entry shared by both, so the two always agree
@@ -31,6 +38,8 @@
 #ifdef _WIN32
 #include <windows.h>
 #endif
+#include <FL/fl_utf8.h>          /* fl_mkdir, for the per-user folder */
+#include "fltk_ui/edit_fileio.h" /* codeFileUnder: is this under that? */
 
 #define CODE_MAX_RECENT  8
 #define CODE_MAX_FOLDERS 8
@@ -44,6 +53,7 @@ typedef struct CodeSettings {
     int  wrapCol;
     int  trimTrailing;
     int  rememberWin;
+    int  restoreSession;                  /* put the open files back on start */
     int  winX, winY, winW, winH;          /* winW == 0: never saved */
     char lastDir[512];                    /* empty => never used a dialog */
     int  nRecent;
@@ -67,6 +77,7 @@ static void codeSettingsDefaults(CodeSettings *s)
     s->wrapCol     = 0;
     s->trimTrailing = 1;                  /* on by default, as asked */
     s->rememberWin = 1;
+    s->restoreSession = 1;
     /* Hidden until asked for: a fresh editor opens on the file you double
        clicked, not on a sidebar listing nothing. File / Open Folder brings it
        back and reveals it by itself, so nothing is stranded. Only a FIRST run
@@ -76,19 +87,111 @@ static void codeSettingsDefaults(CodeSettings *s)
     s->foldersW    = 0;                   /* 0 => the built-in default width */
 }
 
-static void codeSettingsPath(char *buf, int len)
-{
 #ifdef _WIN32
-    char *slash;
-    DWORD n = GetModuleFileNameA(NULL, buf, (DWORD)len);
-    if (n > 0 && n < (DWORD)len && (slash = strrchr(buf, '\\')) != NULL &&
-        (int)(slash - buf) + 14 < len) {
-        strcpy(slash + 1, "codeedit.ini");
-        return;
+/* NT means XP and newer here: 9x reports VER_PLATFORM_WIN32_WINDOWS. Read
+   for the platform id only, which is the one thing GetVersionEx still answers
+   truthfully on Windows 10 without a manifest. */
+static int codeDataIsNT(void)
+{
+    OSVERSIONINFOA v;
+    memset(&v, 0, sizeof(v));
+    v.dwOSVersionInfoSize = sizeof(v);
+    if (!GetVersionExA(&v)) return 0;
+    return v.dwPlatformId == VER_PLATFORM_WIN32_NT;
+}
+
+/* An exe under Program Files is never portable, whatever sits next to it.
+   That folder is exactly where a copied-in codeedit.ini would be read
+   normally and written into a per-user VirtualStore shadow -- the editor
+   would show settings it can never update again. The three variables cover
+   32- and 64-bit Windows, and a 32-bit process on a 64-bit one. */
+static int codeDataInProgramFiles(const char *dir)
+{
+    static const char *const vars[] = {
+        "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"
+    };
+    const char *p;
+    int k;
+    for (k = 0; k < 3; k++)
+        if ((p = getenv(vars[k])) != NULL && *p && codeFileUnder(dir, p))
+            return 1;
+    return 0;
+}
+#endif /* _WIN32 */
+
+/* The folder codeedit.ini and session\ live in, WITH a trailing separator --
+ * or empty, meaning the working directory. Resolved once: the answer must not
+ * change halfway through a run.
+ *
+ * PORTABLE FIRST. If a codeedit.ini is already next to the exe, that is where
+ * everything goes. The Win98 install, a copy on a share, a folder on a stick:
+ * none of them move under anyone who already has one, and no migration is
+ * needed for an editor that has been writing there for twenty versions.
+ *
+ * Otherwise, on XP and newer, %APPDATA%\SOOB-Code. An ordinary user cannot
+ * write to Program Files there -- and on Vista and newer the failure is the
+ * dangerous kind: UAC's VirtualStore silently redirects the write to a
+ * per-user shadow copy, so the save APPEARS to work while the file the
+ * program reads next time, or that another user sees, is a different one.
+ * An unsaved buffer stashed into a VirtualStore nobody knows about is exactly
+ * the way to lose it.
+ *
+ * On 9x: next to the exe, where a Win98 user expects an ini, and where the
+ * whole folder stays copyable.
+ */
+static const char *codeDataDir(void)
+{
+    static char dir[600];
+    static int done = 0;
+
+    if (done) return dir;
+    done = 1;
+    dir[0] = '\0';
+
+#ifdef _WIN32
+    {
+        char probe[700];
+        const char *app;
+        char *slash;
+        FILE *f;
+        DWORD n;
+
+        /* the exe's own folder, with its trailing backslash */
+        n = GetModuleFileNameA(NULL, dir, (DWORD)sizeof(dir));
+        if (n > 0 && n < (DWORD)sizeof(dir) &&
+            (slash = strrchr(dir, '\\')) != NULL)
+            slash[1] = '\0';
+        else
+            dir[0] = '\0';
+
+        /* On NT, Program Files is disqualified before anything else. */
+        if (dir[0] && !(codeDataIsNT() && codeDataInProgramFiles(dir))) {
+            /* An ini there already: portable, and nothing moves. A test for
+               the FILE, deliberately, and not for whether the folder is
+               writable -- under VirtualStore a write to Program Files
+               "succeeds", so writability is the one test that cannot be
+               trusted here. */
+            sprintf(probe, "%scodeedit.ini", dir);
+            f = fopen(probe, "r");
+            if (f) { fclose(f); return dir; }
+        }
+        if (codeDataIsNT() && (app = getenv("APPDATA")) != NULL && *app &&
+            strlen(app) + 16 < sizeof(dir)) {
+            sprintf(probe, "%s\\SOOB-Code", app);
+            fl_mkdir(probe, 0700);              /* already there: fails, fine */
+            sprintf(dir, "%s\\SOOB-Code\\", app);
+        }
     }
 #endif
-    strncpy(buf, "codeedit.ini", (size_t)len - 1);
-    buf[len - 1] = '\0';
+    return dir;
+}
+
+static void codeSettingsPath(char *buf, int len)
+{
+    const char *dir = codeDataDir();
+    buf[0] = '\0';
+    if ((int)strlen(dir) + 13 >= len) return;
+    sprintf(buf, "%scodeedit.ini", dir);
 }
 
 static void codeSettingsLoad(CodeSettings *s)
@@ -114,6 +217,7 @@ static void codeSettingsLoad(CodeSettings *s)
         else if (!strcmp(line, "highlight_word"))  s->highlightWord = atoi(v) != 0;
         else if (!strcmp(line, "wrap_column"))     s->wrapCol     = codeClampInt(atoi(v), 0, 1000);
         else if (!strcmp(line, "trim_trailing"))   s->trimTrailing = atoi(v) != 0;
+        else if (!strcmp(line, "restore_session")) s->restoreSession = atoi(v) != 0;
         else if (!strcmp(line, "remember_window")) s->rememberWin = atoi(v) != 0;
         else if (!strcmp(line, "window"))
             sscanf(v, "%d,%d,%d,%d", &s->winX, &s->winY, &s->winW, &s->winH);
@@ -156,6 +260,7 @@ static void codeSettingsSave(const CodeSettings *s)
     fprintf(f, "highlight_word=%d\n", s->highlightWord);
     fprintf(f, "wrap_column=%d\n", s->wrapCol);
     fprintf(f, "trim_trailing=%d\n", s->trimTrailing);
+    fprintf(f, "restore_session=%d\n", s->restoreSession);
     fprintf(f, "remember_window=%d\n", s->rememberWin);
     if (s->winW > 0)
         fprintf(f, "window=%d,%d,%d,%d\n", s->winX, s->winY, s->winW, s->winH);

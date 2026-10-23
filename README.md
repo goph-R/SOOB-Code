@@ -59,8 +59,18 @@ the status bar.*
   folder listed inside another is searched once, not twice. Double-click a result to open that file on the line;
   Replace All asks once, then edits open tabs through their undo and the
   rest on disk, keeping each file's encoding and line ending
+- The desk comes back: the open files, their carets, the active tab and the
+  expanded folders are restored on start -- and so is anything **unsaved**,
+  including untitled buffers, so closing the window asks nothing at all.
+  Closing a single tab still asks. Settings / Restore open files on start
+  turns it off
 - Status bar (Ln/Col, language, line ending, encoding), recent files,
-  word wrap, settings (`codeedit.ini` next to the exe)
+  word wrap, settings (`codeedit.ini`, with the session beside it in
+  `session\`). Both sit next to the exe for a Win98 or portable install --
+  that is, whenever a `codeedit.ini` is already there and the exe is not
+  under Program Files. Otherwise, on XP and newer, they go to
+  `%APPDATA%\SOOB-Code`, because a write to Program Files there is either
+  refused or, worse, silently redirected into a per-user VirtualStore copy
 - Single instance: opening more files (e.g. F4 in Total Commander) adds tabs
   to the running window instead of starting another one
 - DPI-aware on Vista+ (Segoe UI / Consolas), plain Arial / Courier New on Win98

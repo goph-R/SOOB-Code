@@ -252,15 +252,74 @@ without testing by hand on Win98.
       `grepRoots()` drops any listed folder that sits inside another one,
       on a `codeFileUnder()` separator boundary so `X:\Projects` does not
       swallow `X:\Projects2`.
-      Results keep the folder's NAME as their prefix (`SOOB-Code\codeedit.cpp`)
-      rather than being relative to it. A bare `codeedit.cpp` in a list drawn
-      from five projects does not say which one it came from, and with All on
-      that is the one thing the list has to make obvious.
+      Results keep the folder's NAME as their prefix, as in
+      `SOOB-Code\codeedit.cpp`, rather than being relative to it. A bare
+      `codeedit.cpp` in a list drawn from five projects does not say which one
+      it came from, and with All on that is the one thing the list has to
+      make obvious.
       Find and the re-run after Replace All both go through `grepRunNow()`,
       so the two can never disagree about what was searched. The confirm
       counts the folders that actually HAVE hits -- with All on, the files
       can be spread over projects not looked at in weeks, and that is the
       number worth seeing before a disk write with no undo behind it.
+
+## Done in 1.21
+
+- [x] The session: open files, carets, the active tab, the expanded folders
+      and the TEXT of anything unsaved, restored on start. Hot exit, the way
+      Sublime does it -- closing the window asks nothing, because the work is
+      kept rather than decided about. Closing one TAB still asks; that is a
+      decision about one file, and it is the gesture that means "I am done
+      with this".
+      `edit_session.h` is the store: `session\index.ini` next to the exe plus
+      one stash file per unsaved buffer, holding the raw buffer (UTF-8, LF)
+      exactly as it sits in memory. Not `codeWriteText()`: re-encoding the
+      user's only copy to ANSI on the way out would be a lossy round trip for
+      nothing, so the encoding it will be SAVED with travels in the index
+      instead.
+      Two generations, 'a' and 'b', and that is the part that matters. An
+      unsaved buffer in the stash is the only copy there is, so stash files
+      are written under the generation the index does NOT name, the index is
+      written second, and only then is the old generation deleted. Lose power
+      anywhere in that sequence and the index on disk still names a complete
+      set: the old one or the new one, never half of each.
+      If ANY part of the write fails, the new generation is thrown away and
+      the old prompt is used instead -- dropping unsaved work silently is the
+      one outcome a feature whose whole promise is "your work comes back"
+      must never produce.
+      A restored tab whose file has since been deleted disappears quietly.
+      `addDoc()` raises an `fl_alert` for a file it cannot open, and a folder
+      cleaned out since last time would otherwise meet you with one modal
+      dialog per tab before the window is even up.
+      Restoring is not "you opened this": `gRestoring` keeps it out of Recent
+      Files, which it would otherwise reorder -- and spare the ini 16 rewrites
+      before the window is up.
+      Carets are placed one event loop turn later. Fl_Text_Display cannot
+      place a caret or a scroll until it knows how tall it is, and at restore
+      time the window has not been shown yet.
+      Settings / Restore open files on start switches it off, and switching it
+      off drops the stored desk then and there rather than leaving it to be
+      restored by surprise months later.
+- [x] `codeDataDir()`: where `codeedit.ini` and `session\` actually live.
+      Next to the exe was fine while the editor only wrote a settings file on
+      Win98; it is not fine once it holds the only copy of unsaved work on a
+      machine where Program Files is not writable.
+      PORTABLE FIRST, so nothing moves under anyone: if a `codeedit.ini` is
+      already next to the exe, that is still the folder -- the Win98 install,
+      the copy on the share, a stick. No migration, no surprise.
+      Otherwise, on NT (XP and newer, by `dwPlatformId`), it is
+      `%APPDATA%\SOOB-Code`.
+      The failure being avoided is not "the write fails": on Vista and newer
+      UAC's VirtualStore silently REDIRECTS it to a per-user shadow copy, so
+      the save appears to work while the file read back later, or by another
+      user, is a different one. A stash of unsaved buffers in a VirtualStore
+      nobody knows about is exactly how to lose them.
+      Which is also why an exe under Program Files is disqualified from
+      portable mode even when an ini sits beside it -- copying the folder
+      there is the one case the ini test alone would get wrong -- and why the
+      test is "is there an ini", never "is the folder writable". Under
+      VirtualStore a write to Program Files "succeeds", so writability is the
+      one question that cannot be trusted.
 
 ## Ideas not asked for yet
 - A `-new` switch, or a Settings checkbox, for the odd time a second
