@@ -63,7 +63,7 @@
  * stamp beside it is the one that cannot lie: the compiler writes it, so a
  * title showing an old timestamp means the running exe is not the one you just
  * built. */
-#define CODEEDIT_VERSION "1.16.2"
+#define CODEEDIT_VERSION "1.17"
 
 #define MAX_DOCS   16
 #define MENU_H     25
@@ -73,6 +73,9 @@
 #define FOLD_W_MIN 110        /* ...and the narrowest the splitter may make it */
 #define TABS_W_MIN 240        /* never squeeze the tab row below this */
 #define SPLIT_W     5         /* the drag bar between them */
+/* Open as Text asks first above this: Fl_Text_Buffer lays every line out up
+   front, which on the PII this still has to run on is where the wait is. */
+#define FOLD_TEXT_WARN (1024L * 1024L)
 
 typedef struct CodeDoc {
     CodeEditor *ed;
@@ -80,6 +83,9 @@ typedef struct CodeDoc {
     char label[160];           /* what is currently on the tab */
     int  shownDirty;           /* so labels are only rebuilt when they change */
     int  wrapColSet;           /* Wrap at Column... used: ignore the default */
+    int  noSaveBack;           /* opened as text though it holds a NUL byte:
+                                  the buffer is a TRUNCATION of the file, so
+                                  Save must not write it back over it */
 } CodeDoc;
 
 static CodeDoc          gDocs[MAX_DOCS];
@@ -289,6 +295,10 @@ static CodeEditor *addDoc(const char *path)
             return 0;
         }
         copyStr(d->path, (int)sizeof(d->path), path);
+        /* Asked of the editor rather than of the path, so this covers every
+           way a file gets opened -- the tree, Recent, the command line, a
+           grep hit -- not just the one that knew to look. */
+        d->noSaveBack = d->ed->truncated();
         recentNote(path);
     } else {
         gUntitledSeq++;
@@ -316,12 +326,24 @@ static int saveDoc(int i, int forcePrompt)
     if (i < 0 || i >= gDocCount) return 0;
     d = &gDocs[i];
 
+    /* Opened as text over a NUL byte: the buffer stops where codeReadText()
+       did, so writing it back would cut the file off there. Save becomes Save
+       As, and the flag goes once the path is somewhere else -- that new file
+       really is what the buffer holds. */
+    if (d->noSaveBack && !forcePrompt) {
+        fl_message("%s holds binary data and is only partly loaded.\n"
+                   "Pick another name: saving it back would truncate it.",
+                   baseName(d->path));
+        forcePrompt = 1;
+    }
+
     if (forcePrompt || !d->path[0]) {
         char picked[512];
         const char *dir = currentDir(dirbuf, (int)sizeof(dirbuf));
         const char *suggest = d->path[0] ? baseName(d->path) : "untitled.lua";
         if (!codeFileSaveDialog(picked, (int)sizeof(picked), dir, suggest)) return 0;
         copyStr(d->path, (int)sizeof(d->path), picked);
+        d->noSaveBack = 0;
         /* the extension may have changed the language */
         d->ed->language(lexLangFromPath(d->path));
         codeLastDirFromPath(&gSet, d->path);   /* shared with Open; recentNote saves */
@@ -481,6 +503,7 @@ static void cbReload(Fl_Widget *, void *)
         return;
     }
     ed->language(lang);
+    gDocs[i].noSaveBack = ed->truncated();   /* the file may have changed kind */
     len = ed->buffer()->length();
     if (pos > len) pos = len;
     ed->insert_position(ed->buffer()->utf8_align(pos));
@@ -823,6 +846,40 @@ static void cbFoldActivate(Fl_Tree_Item *it, void *)
     Fl::add_timeout(0.0, foldOpenLater, 0);
 }
 
+/* "Open as Text": open a file the extension lists refuse -- an .obj, a .dat,
+ * a .foo nobody has taught the editor yet. That list is the only thing
+ * standing between codeReadText() and a 40 MB .iso (see the gate comment in
+ * edit_fileio.h), so stepping around it means asking the two questions it was
+ * answering by proxy, which is what codeFileSniff() reads the file for.
+ * Deferred through the same timeout as a double-click, for the same reason. */
+static void cbFoldOpenText(Fl_Tree_Item *it)
+{
+    const char *path = CodeFolders::pathOf(it);
+    long size = 0;
+    int  nul  = 0;
+
+    if (!path || CodeFolders::isDirOf(it)) return;
+    if (!codeFileSniff(path, &size, &nul)) {
+        fl_alert("Could not read\n%s", path);
+        return;
+    }
+    if (size > FOLD_TEXT_WARN &&
+        fl_choice("%s is %ld KB.\nOpening it as text may take a while.",
+                  "Cancel", "Open", 0, baseName(path), size / 1024L) != 1)
+        return;
+    /* A NUL byte is not a "maybe": the document WILL be short of the file,
+       which is why loadFile() arms the Save guard for it. Said here anyway,
+       before the tab opens, because a half-loaded file looks whole. */
+    if (nul &&
+        fl_choice("%s is not a text file.\n\nOnly the part before its first "
+                  "zero byte can be shown, so Save\nwill ask for another name "
+                  "rather than truncate it.",
+                  "Cancel", "Open anyway", 0, baseName(path)) != 1)
+        return;
+    copyStr(gFoldPending, (int)sizeof(gFoldPending), path);
+    Fl::add_timeout(0.0, foldOpenLater, 0);
+}
+
 /* Fl_Tree's own callback: the only place that catches every way an item can
  * be opened -- the [+] icon, Enter, Right-arrow and our double-click. */
 static void cbFoldTree(Fl_Widget *w, void *)
@@ -897,8 +954,9 @@ static void syncFoldersItem(void)
 
 /* The tree's right-click menu. Same shape as the tab menu: a standalone
  * array padded once at startup, popped with the menu bar as its look. */
-enum { FOLD_M_OPEN, FOLD_M_REMOVE, FOLD_M_REFRESH };
+enum { FOLD_M_TEXT, FOLD_M_OPEN, FOLD_M_REMOVE, FOLD_M_REFRESH };
 static Fl_Menu_Item gFoldMenu[] = {
+    { "Open as &Text",   0, 0, (void *)FOLD_M_TEXT, FL_MENU_DIVIDER },
     { "Open &Folder...", 0, 0, (void *)FOLD_M_OPEN },
     { "&Remove Folder",  0, 0, (void *)FOLD_M_REMOVE, FL_MENU_DIVIDER },
     { "Re&fresh",        0, 0, (void *)FOLD_M_REFRESH },
@@ -908,6 +966,9 @@ static Fl_Menu_Item gFoldMenu[] = {
 static void cbFoldMenu(Fl_Tree_Item *it, void *)
 {
     const Fl_Menu_Item *m;
+    /* A file and only a file -- on a folder the command means nothing. */
+    if (it && !CodeFolders::isDirOf(it)) gFoldMenu[FOLD_M_TEXT].activate();
+    else                                 gFoldMenu[FOLD_M_TEXT].deactivate();
     /* Both need something to act on; Open Folder never does. */
     if (gTree->rootOf(it)) {
         gFoldMenu[FOLD_M_REMOVE].activate();
@@ -919,6 +980,7 @@ static void cbFoldMenu(Fl_Tree_Item *it, void *)
     m = gFoldMenu->popup(Fl::event_x(), Fl::event_y(), 0, 0, codeContextLook);
     if (!m) return;
     switch ((int)(long)m->user_data()) {
+    case FOLD_M_TEXT:    cbFoldOpenText(it);   break;
     case FOLD_M_OPEN:    cbOpenFolder(0, 0);   break;
     case FOLD_M_REMOVE:  cbRemoveFolder(0, 0); break;
     /* `it` is still good here: Refresh is the one branch that does not
@@ -1496,10 +1558,15 @@ static void cbGrepList(Fl_Widget *, void *)
 static int grepReplaceOnDisk(const char *path, const char *needle,
                              const char *repl, int matchCase)
 {
-    int enc, crlf, n = 0;
-    char *text = codeReadText(path, &enc, &crlf);
+    int enc, crlf, trunc, n = 0;
+    char *text = codeReadText(path, &enc, &crlf, &trunc);
     char *out;
     if (!text) return 0;
+    /* Only part of the file came back (a NUL byte in it), so writing the
+       result would drop the rest. The candidate list is filtered by
+       codeFileOpenableName() and should never offer such a file, which is
+       exactly why this costs nothing to refuse. */
+    if (trunc) { free(text); return 0; }
     out = codeGrepReplace(text, needle, repl, matchCase, &n);
     free(text);
     if (!out) return 0;

@@ -17,9 +17,11 @@ the status bar.*
 - Syntax highlighting: Bash / sh, Batch (`.bat` / `.cmd`), C / C++ (also
   `.glsl` / `.vert` / `.frag` / `.inl` / `.rc`), CSS, HTML (with `<script>` /
   `<style>`), INI (`.ini` / `.cfg` / `.inf`), Java, JavaScript (also `.ts` /
-  `.tsx`), JSON (keys told apart from string values), Lua, Markdown (with
-  fenced code), Pascal, PHP (HTML templates with `<?php ?>` blocks), Python,
-  SQL, XML (`.xml` / `.xsd` / `.xsl` / `.svg` / `.tmx` / `.qrc` / `.csproj`)
+  `.tsx`), JSON (keys told apart from string values), Lua, Markdown (a
+  fenced block colours as its language -- ```` ```php ````, ```` ```bash ````
+  and every other tag on this list; `~~~` fences stay flat), Pascal,
+  PHP (HTML templates with `<?php ?>` blocks), Python, SQL,
+  XML (`.xml` / `.xsd` / `.xsl` / `.svg` / `.tmx` / `.qrc` / `.csproj`)
 - Auto-indent, Tab / Shift+Tab block indent; `}` `]` `)` re-indent to their
   opener, and so do Lua's `end` / `until` / `else` and Pascal's
   `end` / `until` / `except` / `finally`
@@ -38,7 +40,11 @@ the status bar.*
   the tree's right-click menu; double-click opens a file in a tab, or hands
   it to Windows if the editor cannot read it (those are drawn dimmed).
   Hidden and system files are skipped; drag the edge to resize. Refresh on
-  the right-click menu re-reads a folder that changed on disk
+  the right-click menu re-reads a folder that changed on disk, and Open as
+  Text opens a file the editor would otherwise refuse -- an `.obj`, a `.dat`,
+  anything with an extension it has not been taught. A big one asks first, and
+  a file with a zero byte in it is only loaded as far as that byte, so Save
+  asks for another name rather than truncate it
 - Find in Folder (Ctrl+Shift+F) searches the current project and everything
   under it -- the sidebar folder holding the active tab's file, or the one
   holding the tree selection, or the first listed. Double-click a result to open that file on the line;

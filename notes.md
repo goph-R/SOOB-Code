@@ -143,22 +143,49 @@ without testing by hand on Win98.
       foreground process do that; on 2000 / Me and later it also allows the
       running one (AllowSetForegroundWindow, looked up at runtime).
 
+## Done in 1.17
+
+- [x] Open as Text on the Folders tree's right-click menu, for a file whose
+      extension the editor does not know -- an `.obj`, a `.dat`, a `.foo`.
+      `codeFileOpenableName()` was the only thing keeping `codeReadText()`
+      away from a 40 MB `.iso`, so going around it asks the two questions
+      that list was answering by proxy: a new `codeFileSniff()` reads the
+      size (above 1 MB it asks first) and looks for a NUL byte.
+      A NUL matters more than it looks. `codeReadText()` compacts CRLF with
+      a `for (; text[i]; i++)` walk, so the document STOPS at the first zero
+      byte -- open a `.exe`, press Ctrl+S, and the first few hundred bytes
+      are written back over the whole file. The guard therefore sits in the
+      reader, not in the menu command: `codeReadText()` reports it,
+      `CodeEditor::truncated()` carries it, and `addDoc()` arms the
+      document, so Recent Files, the command line and a grep hit are covered
+      too, not just the one entry point that knew to look. Such a document
+      turns Save into Save As. Find in Folder's on-disk Replace All refuses
+      a truncated read for the same reason -- unreachable today, since its
+      candidates are filtered by the same list, and free to close.
+- [x] ```bash, ```bat, ```ini, ```xml and ```json fenced blocks in Markdown
+      -- the two entries below this section, which said it could not be
+      done. It could, for a price: a fence has to remember which character
+      opened it, so a sub-language cost TWO states, one for ``` and one for
+      ~~~. Giving the tilde fence a single flat state (what ```` already
+      had) turned `2 x 11` carry states into `16 + 1`, which paid for all
+      five with room left: `LS_MAX` is 55 now, not 60, against the same
+      ceiling of 62.
+      The trade is that ~~~php no longer colours as PHP. Backticks are what
+      documents are actually written with -- and the five tables also stop
+      being function-local in `lexLangFromPath()`, so an extension and a
+      fence tag finally mean the same thing for every language there is.
+
 ## Ideas not asked for yet
 - A `-new` switch, or a Settings checkbox, for the odd time a second
   window is wanted.
-- ```bash / ```bat fenced blocks in Markdown. NOT free: it would push
-  `LEX_MD_NSUB` to 13 and the fence carry states into `LS_CF_BLOCK`, so
-  every `LS_CF_*` would have to shift up and `LS_MAX` would land on 62 --
-  exactly the ceiling, with no headroom left.
 - Bash heredocs (`<<EOF`): the body is currently lexed as code. Needs a
   carry state plus the delimiter, so it is the one shell feature that is
   not cheap.
 - YAML: NOT wanted -- asked and declined, do not re-propose. Uncovered but
   rarer here, and unasked: asm, cs, kt, pl, cmake.
-- ```json fences in Markdown: same carry-state wall as ```bash.
 - XML `<![CDATA[ ... ]]>` spanning lines: the `<!` branch stops at the first
   `>`, so a multi-line CDATA block is only partly coloured. One carry state
-  would fix it; 4 are still free (LS_MAX is 58, the ceiling is 62).
+  would fix it; 7 are still free (LS_MAX is 55, the ceiling is 62).
 - Trim exemption for `vendor/`: saving an upstream FLTK source from the
   editor would strip its trailing whitespace (Fl_Text_Buffer.cxx alone has
   137 such lines). Only bites if you edit one, and Ctrl+Z undoes it.
