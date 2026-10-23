@@ -29,11 +29,17 @@ the status bar.*
   keeps a two-space hard line break)
 - Smart Home, centre-on-find, re-indent on paste
 - Right-click menu (Cut / Copy / Paste / Delete), and on a tab: Copy
-  absolute path; Tools / Format JSON
+  absolute path, or Select in Folders to find that file in the sidebar
+  (it comes out if hidden; nothing is added to it); Tools / Format JSON
   (Alt+J) pretty-prints the selection or the whole file with the Tab
   setting, or puts the caret on the first error
 - Matching pairs: the bracket at the caret and its partner ( ) [ ] { } are
   outlined (red if unmatched), and in HTML / PHP both names of an element
+- The word at the caret is underlined wherever else it is on screen, so a
+  name can be followed by eye while scrolling. Whole words, exact spelling,
+  no parsing: keywords, types and numbers are left alone, everything else
+  is a name. Double-click one to the same effect. View / Highlight Word at
+  Caret turns it off, as does the Settings checkbox -- both remembered
 - Encodings: UTF-8, UTF-8 with BOM, ANSI (system code page) — detected on
   open, kept on save; CRLF / LF kept too
 - Folders sidebar (View / Folders): add folders with File / Open Folder or

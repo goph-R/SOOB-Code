@@ -175,6 +175,64 @@ without testing by hand on Win98.
       being function-local in `lexLangFromPath()`, so an extension and a
       fence tag finally mean the same thing for every language there is.
 
+## Done in 1.18
+
+- [x] Select in Folders, next to Copy absolute path on a tab's right-click
+      menu: find the tab's file in the sidebar and select it. Both items
+      answer the same question -- where does this file live -- one for
+      another program, one in the tree.
+      `CodeFolders::reveal()` walks down from the listed folder that holds
+      the path, reading and opening each directory on the way, then scrolls
+      the row into view. The prefix test is `codeFileUnder()`, so `C:\proj`
+      cannot swallow `C:\project2\x.c`.
+      It will not re-read a directory that is already loaded: a stale folder
+      is what Refresh is for, and re-reading here would close whatever is
+      open underneath -- a steep price for a command whose job is to show one
+      row. So a file created since the folder was read is not found, and the
+      message says so rather than just failing.
+      Nothing is ever ADDED to the sidebar: "select it if the folders hold
+      it" is the whole contract. The sidebar does come out if it was hidden,
+      since the command means nothing otherwise, and the focus stays in the
+      editor so typing on needs no click back.
+      Deferred by one event loop turn, like a double-click in the tree:
+      `show_item()` scrolls using the y each item got in the last draw, and
+      when the sidebar has just come out of hiding those were never set.
+
+## Done in 1.19
+
+- [x] The word at the caret underlined wherever else it is on screen -- for
+      following a variable by eye while scrolling. Asked for as "just string
+      match", and that is what it is: `codeWordHits()` compares bytes, whole
+      words only, exact spelling. No scoping, no declarations, nothing
+      parsed.
+      `codeWordAt()` decides whether there is a name there at all. It refuses
+      a word starting with a digit (standing past `x = 0;` must not underline
+      every 0), and a word whose style slot is `LEX_KEYWORD` or `LEX_TYPE` --
+      the two slots a lexer gives to vocabulary rather than to names. That is
+      what makes the veto per-language for free: `end` is a keyword in Lua
+      and a name in C, and the style buffer already knows which. Builtins
+      (`LEX_IDENT`) are deliberately allowed: `printf` is worth tracing.
+      Both are buffer-only and tested headless.
+      The widget half is about not doing work. The hits and their x / y are
+      cached against (word, first visible char, last visible char, horizontal
+      offset), so the caret blink -- twice a second, forever -- recomputes
+      nothing. A scroll rescans inside `occDraw()`, where the whole text area
+      is being repainted anyway, so it needs no damage of its own. Only a
+      change of WORD pays for a redisplay, and then only over the old and new
+      underlines. An edit shifts the recorded positions the way `matchShift()`
+      does for the pair boxes.
+      Drawn as an underline rather than an outline box: there can be dozens
+      on screen, and a box each turns the view into a grid. The pair box
+      keeps the outline, so the two never read as the same thing.
+      Switchable from two places, which are one setting: View / Highlight
+      Word at Caret for the file you are in the middle of, and the Settings
+      checkbox where the other display options live. Both write
+      `highlight_word` to the ini, so whichever was used last is what the
+      next run starts with. Off has to actively erase what is on screen --
+      `occUpdate()` returns at the door once the switch is off, so
+      `occApply()` is the one that clears, from the same per-editor
+      `applySettings()` the font size and the gutter already go through.
+
 ## Ideas not asked for yet
 - A `-new` switch, or a Settings checkbox, for the odd time a second
   window is wanted.

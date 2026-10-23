@@ -40,6 +40,7 @@ typedef struct CodeSettings {
     int  tabWidth;
     int  useTabs;
     int  lineNumbers;
+    int  highlightWord;                   /* underline the word at the caret */
     int  wrapCol;
     int  trimTrailing;
     int  rememberWin;
@@ -62,6 +63,7 @@ static void codeSettingsDefaults(CodeSettings *s)
     s->tabWidth    = 4;
     s->useTabs     = 0;
     s->lineNumbers = 1;
+    s->highlightWord = 1;
     s->wrapCol     = 0;
     s->trimTrailing = 1;                  /* on by default, as asked */
     s->rememberWin = 1;
@@ -109,6 +111,7 @@ static void codeSettingsLoad(CodeSettings *s)
         else if (!strcmp(line, "tab_width"))       s->tabWidth    = codeClampInt(atoi(v), 1, 16);
         else if (!strcmp(line, "use_tabs"))        s->useTabs     = atoi(v) != 0;
         else if (!strcmp(line, "line_numbers"))    s->lineNumbers = atoi(v) != 0;
+        else if (!strcmp(line, "highlight_word"))  s->highlightWord = atoi(v) != 0;
         else if (!strcmp(line, "wrap_column"))     s->wrapCol     = codeClampInt(atoi(v), 0, 1000);
         else if (!strcmp(line, "trim_trailing"))   s->trimTrailing = atoi(v) != 0;
         else if (!strcmp(line, "remember_window")) s->rememberWin = atoi(v) != 0;
@@ -150,6 +153,7 @@ static void codeSettingsSave(const CodeSettings *s)
     fprintf(f, "tab_width=%d\n", s->tabWidth);
     fprintf(f, "use_tabs=%d\n", s->useTabs);
     fprintf(f, "line_numbers=%d\n", s->lineNumbers);
+    fprintf(f, "highlight_word=%d\n", s->highlightWord);
     fprintf(f, "wrap_column=%d\n", s->wrapCol);
     fprintf(f, "trim_trailing=%d\n", s->trimTrailing);
     fprintf(f, "remember_window=%d\n", s->rememberWin);

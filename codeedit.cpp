@@ -63,7 +63,7 @@
  * stamp beside it is the one that cannot lie: the compiler writes it, so a
  * title showing an old timestamp means the running exe is not the one you just
  * built. */
-#define CODEEDIT_VERSION "1.17"
+#define CODEEDIT_VERSION "1.19"
 
 #define MAX_DOCS   16
 #define MENU_H     25
@@ -102,6 +102,8 @@ static Fl_Double_Window *gGrepWin;      /* ...and with Find in Folder */
 static CodeSettings     gSet;           /* codeedit.ini, see edit_settings.h */
 static void recentNote(const char *path);
 static void findRetireStaleMsg(void);   /* defined with the Find UI below */
+static void revealInFolders(const char *path);  /* ...and with the sidebar */
+static void applySettings(void);        /* ...and with the Settings dialog */
 
 static void msg(const char *fmt, ...)
 {
@@ -522,26 +524,41 @@ static void cbTabClose(Fl_Widget *w, void *)
     closeDoc(docIndexOf(w));
 }
 
-/* A tab's right-click menu. Deliberately no Close: you right-click a tab to
- * find out where the file lives, and a Close one row away from that would be
- * a misclick waiting to happen -- the X and middle-click already close.
+/* A tab's right-click menu. Both items answer the same question -- where does
+ * this file live -- one for another program, one in the sidebar. Deliberately
+ * no Close: a Close one row away from that would be a misclick waiting to
+ * happen, and the X and middle-click already close.
  * The paths are absolute already: the dialogs return them that way and
- * command-line names go through ipcFullPath(). Grayed out on an untitled tab. */
+ * command-line names go through ipcFullPath(). Grayed out on an untitled tab,
+ * which has no file for either to point at. */
+enum { TAB_M_COPY, TAB_M_REVEAL };
 static Fl_Menu_Item gTabMenu[] = {
-    { "Copy &absolute path", 0, 0, 0 },
+    { "Copy &absolute path", 0, 0, (void *)TAB_M_COPY },
+    { "&Select in Folders",  0, 0, (void *)TAB_M_REVEAL },
     { 0 }
 };
 
 static void cbTabMenu(Fl_Widget *w, void *)
 {
+    const Fl_Menu_Item *m;
     int i = docIndexOf(w);
     const char *path;
+
     if (i < 0) return;
     path = gDocs[i].path;
-    if (path[0]) gTabMenu[0].activate(); else gTabMenu[0].deactivate();
-    if (gTabMenu->popup(Fl::event_x(), Fl::event_y(), 0, 0, codeContextLook) ==
-        &gTabMenu[0])
-        Fl::copy(path, (int)strlen(path), 1);
+    if (path[0]) {
+        gTabMenu[TAB_M_COPY].activate();
+        gTabMenu[TAB_M_REVEAL].activate();
+    } else {
+        gTabMenu[TAB_M_COPY].deactivate();
+        gTabMenu[TAB_M_REVEAL].deactivate();
+    }
+    m = gTabMenu->popup(Fl::event_x(), Fl::event_y(), 0, 0, codeContextLook);
+    if (!m) return;
+    switch ((int)(long)m->user_data()) {
+    case TAB_M_COPY:   Fl::copy(path, (int)strlen(path), 1); break;
+    case TAB_M_REVEAL: revealInFolders(path);                break;
+    }
 }
 
 static void cbClose (Fl_Widget *, void *)
@@ -935,6 +952,27 @@ static void cbRemoveFolder(Fl_Widget *, void *)
     if (keep[0] && codeFolderRemove(&gSet, keep)) codeSettingsSave(&gSet);
 }
 
+/* The same switch as the Settings checkbox, one click away -- it is the kind
+ * of thing you turn off for one crowded file and back on after. Both write
+ * the ini, so whichever was used last is what the next run starts with. */
+static void syncHighlightItem(void);
+
+static void cbHighlightWord(Fl_Widget *, void *)
+{
+    gSet.highlightWord = !gSet.highlightWord;
+    applySettings();                  /* clears or repaints the underlines */
+    syncHighlightItem();
+    codeSettingsSave(&gSet);
+}
+
+static void syncHighlightItem(void)
+{
+    Fl_Menu_Item *it;
+    if (!gMenuBar) return;
+    it = (Fl_Menu_Item *)gMenuBar->find_item(cbHighlightWord);
+    if (it) editMenuCheck(it, gSet.highlightWord);
+}
+
 static void cbFolders(Fl_Widget *, void *)
 {
     gSideShow = !gSideShow;
@@ -990,6 +1028,48 @@ static void cbFoldMenu(Fl_Tree_Item *it, void *)
     }
 }
 
+/* ---- Select in Folders (the tab menu) -----------------------------------
+ *
+ * Deferred by one event loop turn, the same way a double-click in the tree
+ * is: Fl_Tree::show_item() scrolls using the y each item was given in the
+ * last draw, and when the sidebar has just come out of hiding -- the common
+ * case for this command -- those are stale or were never set at all. One turn
+ * later the tree has drawn itself and the scroll lands where it should.
+ */
+static char gRevealPending[600];
+
+static void revealLater(void *)
+{
+    if (!gRevealPending[0]) return;
+    if (gTree && !gTree->reveal(gRevealPending))
+        fl_message("%s is not shown in the Folders sidebar.\n\n"
+                   "Its folder is not listed there, the file is hidden, or\n"
+                   "the folder was read before the file existed -- Refresh\n"
+                   "on the tree's right-click menu re-reads it.",
+                   baseName(gRevealPending));
+    gRevealPending[0] = '\0';
+}
+
+/* Show the sidebar if it was hidden -- the command means nothing otherwise --
+ * but never ADD a folder: "select it if the folders hold it" is the whole
+ * contract, and listing a new root behind the user's back would be a
+ * different command wearing this one's name. The focus stays in the editor:
+ * this answers a question about the file being edited, and typing on should
+ * not need a click back. */
+static void revealInFolders(const char *path)
+{
+    if (!gTree || !path || !path[0]) return;
+    if (!gSideShow) {
+        gSideShow = 1;
+        gSet.foldersShow = gSideShow;
+        layoutSide();
+        syncFoldersItem();
+        codeSettingsSave(&gSet);
+    }
+    copyStr(gRevealPending, (int)sizeof(gRevealPending), path);
+    Fl::add_timeout(0.0, revealLater, 0);
+}
+
 /* ---- settings ---------------------------------------------------------- */
 static void applySettings(void)
 {
@@ -997,6 +1077,7 @@ static void applySettings(void)
     codeIndent      = gSet.tabWidth;
     codeUseTabs     = gSet.useTabs;
     codeLineNumbers = gSet.lineNumbers;
+    codeOccurs      = gSet.highlightWord;
     codeSetFontSize(editDpi(gSet.fontSize));
     for (i = 0; i < gDocCount; i++) gDocs[i].ed->applySettings();
     if (gTabs) {
@@ -1008,9 +1089,9 @@ static void applySettings(void)
 static void cbSettings(Fl_Widget *, void *)
 {
     char buf[16];
-    Fl_Double_Window *w = new Fl_Double_Window(340, 250, "Settings");
+    Fl_Double_Window *w = new Fl_Double_Window(340, 274, "Settings");
     Fl_Int_Input *font, *tab, *wrap;
-    Fl_Check_Button *tabs, *nums, *trim, *rem;
+    Fl_Check_Button *tabs, *nums, *occ, *trim, *rem;
     Fl_Return_Button *ok;
     Fl_Button *cancel;
     Fl_Box *hint;
@@ -1023,11 +1104,13 @@ static void cbSettings(Fl_Widget *, void *)
     hint->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
     tabs = new Fl_Check_Button(16, 104, 310, 22, "Indent with tab characters");
     nums = new Fl_Check_Button(16, 128, 310, 22, "Show line numbers");
-    trim = new Fl_Check_Button(16, 152, 310, 22,
+    occ  = new Fl_Check_Button(16, 152, 310, 22,
+                               "Underline the word at the caret");
+    trim = new Fl_Check_Button(16, 176, 310, 22,
                                "Remove trailing whitespace on save");
-    rem  = new Fl_Check_Button(16, 176, 310, 22, "Remember window size and position");
-    ok     = new Fl_Return_Button(150, 214, 86, 26, "OK");
-    cancel = new Fl_Button(244, 214, 86, 26, "Cancel");
+    rem  = new Fl_Check_Button(16, 200, 310, 22, "Remember window size and position");
+    ok     = new Fl_Return_Button(150, 238, 86, 26, "OK");
+    cancel = new Fl_Button(244, 238, 86, 26, "Cancel");
     w->end();
     editDpiScaleTree(w);
 
@@ -1036,6 +1119,7 @@ static void cbSettings(Fl_Widget *, void *)
     sprintf(buf, "%d", gSet.wrapCol);  wrap->value(buf);
     tabs->value(gSet.useTabs);
     nums->value(gSet.lineNumbers);
+    occ->value(gSet.highlightWord);
     trim->value(gSet.trimTrailing);
     rem->value(gSet.rememberWin);
 
@@ -1054,9 +1138,11 @@ static void cbSettings(Fl_Widget *, void *)
             gSet.wrapCol     = codeClampInt(atoi(wrap->value()), 0, 1000);
             gSet.useTabs     = tabs->value() ? 1 : 0;
             gSet.lineNumbers = nums->value() ? 1 : 0;
+            gSet.highlightWord = occ->value() ? 1 : 0;
             gSet.trimTrailing = trim->value() ? 1 : 0;
             gSet.rememberWin = rem->value() ? 1 : 0;
             applySettings();
+            syncHighlightItem();      /* the View check follows the dialog */
             codeSettingsSave(&gSet);
             break;
         }
@@ -1721,6 +1807,7 @@ static Fl_Menu_Item gMenu[] = {
         /* No accelerator: Alt+F/E/V/T/N/L are the menu-bar titles and
            Alt+Z / Alt+J are taken. */
         { "&Folders", 0, cbFolders },
+        { "&Highlight Word at Caret", 0, cbHighlightWord },
         { 0 },
     { "&Tools", 0, 0, 0, FL_SUBMENU },
         { "Format &JSON", FL_ALT + 'j', cbFormatJson },
@@ -1947,6 +2034,7 @@ int main(int argc, char **argv)
     codeIndent      = gSet.tabWidth;
     codeUseTabs     = gSet.useTabs;
     codeLineNumbers = gSet.lineNumbers;
+    codeOccurs      = gSet.highlightWord;
     codeSetFontSize(editDpi(gSet.fontSize));
 #ifdef _WIN32
     sprintf(gAnsiLabel, "ANSI (code page %u)", (unsigned)GetACP());
@@ -2084,6 +2172,7 @@ int main(int argc, char **argv)
     }
     layoutSide();                       /* after the saved size is applied */
     syncFoldersItem();
+    syncHighlightItem();
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-trace") == 0) continue;
