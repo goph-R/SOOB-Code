@@ -64,7 +64,7 @@
  * stamp beside it is the one that cannot lie: the compiler writes it, so a
  * title showing an old timestamp means the running exe is not the one you just
  * built. */
-#define CODEEDIT_VERSION "1.21"
+#define CODEEDIT_VERSION "1.22"
 
 #define MAX_DOCS   16
 #define MENU_H     25
@@ -720,9 +720,7 @@ static void cbClose (Fl_Widget *, void *)
     codeTrace("cbClose: returned");
 }
 
-#ifdef _WIN32
 static void ipcUnregister(void);           /* single instance, near main() */
-#endif
 
 static void cbExit(Fl_Widget *, void *)
 {
@@ -747,9 +745,7 @@ static void cbExit(Fl_Widget *, void *)
         codeSettingsSave(&gSet);
         if (gFindWin) gFindWin->hide();   /* else Fl::run() never returns */
         if (gGrepWin) gGrepWin->hide();   /* ...and the same for this one */
-#ifdef _WIN32
         ipcUnregister();
-#endif
         gWin->hide();
     }
 }
@@ -2168,7 +2164,10 @@ static void flMsg(const char *fmt, ...)
  *            looked up at runtime).
  *
  * A second instance that finds no window within 3 s -- the first one still
- * starting up, or shutting down -- runs on its own instead. */
+ * starting up, or shutting down -- runs on its own instead.
+ *
+ * Linux / X11 does the same over a Unix-domain socket; see the #else branch
+ * below. Nothing there is compiled on Windows. */
 #ifdef _WIN32
 #define CODE_IPC_MUTEX "SOOB-Code.codeedit.instance"
 #define CODE_IPC_CLASS "SOOBCodeEdit"
@@ -2302,17 +2301,249 @@ static int ipcHandler(int ev)
     Fl::add_timeout(0.0, ipcOpenQueued);
     return 1;
 }
+#else
+/* Linux / X11: the same hand-off, over a Unix-domain socket.
+ *
+ *   detect   connect() to the socket. Success means a live instance; a
+ *            missing socket (ENOENT) or a refused one (ECONNREFUSED: the file
+ *            a crashed instance left behind) means none, and we take its place.
+ *   send     One connection per hand-off: each FULL path followed by '\n'.
+ *            No paths at all just raises the window.
+ *   receive  The listening socket is an Fl::add_fd source. Each accepted
+ *            connection is read to EOF through add_fd as well, non-blocking,
+ *            so a slow sender never stalls the editor; the paths are then
+ *            opened from a zero-delay timeout, as on Windows.
+ *   focus    _NET_ACTIVE_WINDOW with source 2 ("pager"): window managers
+ *            honour that one, where a plain raise from a background process
+ *            is caught by focus-stealing prevention and only flashes the
+ *            taskbar.
+ *
+ * The socket lives in $XDG_RUNTIME_DIR (per user, mode 0700); without one,
+ * in /tmp under the uid, chmod 0600. */
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <errno.h>
+#include <limits.h>
+#include <fcntl.h>
+
+#define CODE_IPC_MAXQ   64
+#define CODE_IPC_MAXMSG 65536               /* per connection; more is ignored */
+
+typedef struct {
+    char *buf;
+    int   len, cap;
+} IpcConn;
+
+static int   gIpcListen = -1;               /* first instance: the listener */
+static char  gIpcPath[108];                 /* sizeof(sockaddr_un.sun_path) */
+static char *gIpcQueue[CODE_IPC_MAXQ];      /* paths received, not yet opened */
+static int   gIpcCount;
+
+static void ipcSockPath(void)
+{
+    const char *rt = getenv("XDG_RUNTIME_DIR");
+    if (rt && *rt && strlen(rt) + 20 < sizeof(gIpcPath))
+        sprintf(gIpcPath, "%s/soob-code.sock", rt);
+    else
+        sprintf(gIpcPath, "/tmp/soob-code-%u.sock", (unsigned)getuid());
+}
+
+static void ipcAddr(struct sockaddr_un *a)
+{
+    memset(a, 0, sizeof(*a));
+    a->sun_family = AF_UNIX;
+    copyStr(a->sun_path, (int)sizeof(a->sun_path), gIpcPath);
+}
+
+/* Full path for a command-line argument, resolved against OUR directory.
+ * A file that does not exist yet (codeedit new.lua) still gets one. */
+static void ipcFullPath(const char *in, char *out, int len)
+{
+    char buf[PATH_MAX];
+    if (realpath(in, buf)) { copyStr(out, len, buf); return; }
+    if (in[0] != '/' && getcwd(buf, sizeof(buf)) &&
+        strlen(buf) + strlen(in) + 2 <= (size_t)len) {
+        sprintf(out, "%s/%s", buf, in);
+        return;
+    }
+    copyStr(out, len, in);
+}
+
+/* MSG_NOSIGNAL: a receiver that dies mid-send must not kill us by SIGPIPE. */
+static int ipcWriteAll(int fd, const char *p, int n)
+{
+    while (n > 0) {
+        ssize_t w = send(fd, p, (size_t)n, MSG_NOSIGNAL);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            return 0;
+        }
+        p += w;
+        n -= (int)w;
+    }
+    return 1;
+}
+
+/* Second instance: hand our files to the running one. 1 = done, exit.
+ * First instance: returns 0 with gIpcListen bound, ready for ipcListen(). */
+static int ipcHandOff(int argc, char **argv)
+{
+    struct sockaddr_un a;
+    int fd, i, err, sent = 0, ok = 1;
+    char full[PATH_MAX + 2];
+
+    ipcSockPath();
+    ipcAddr(&a);
+
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    if (connect(fd, (struct sockaddr *)&a, sizeof(a)) == 0) {
+        for (i = 1; i < argc && ok; i++) {
+            if (strcmp(argv[i], "-trace") == 0) continue;
+            ipcFullPath(argv[i], full, PATH_MAX);
+            strcat(full, "\n");
+            ok = ipcWriteAll(fd, full, (int)strlen(full));
+            if (ok) sent++;
+        }
+        close(fd);
+        return ok || sent > 0;              /* nothing got through: run alone */
+    }
+    err = errno;
+    close(fd);
+
+    /* Nobody there: become the instance the next one hands off to. Only a
+     * socket that is provably dead is removed -- anything else (an instance
+     * mid-startup, a permission problem) and we just run without one. */
+    if (err == ECONNREFUSED) unlink(gIpcPath);
+    else if (err != ENOENT) return 0;
+
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    if (bind(fd, (struct sockaddr *)&a, sizeof(a)) != 0 || listen(fd, 8) != 0) {
+        close(fd);                          /* lost a start-up race: fine */
+        return 0;
+    }
+    chmod(gIpcPath, 0600);
+    fcntl(fd, F_SETFD, FD_CLOEXEC);         /* not into "Open with" children */
+    gIpcListen = fd;
+    return 0;
+}
+
+/* Closing: stop being a hand-off target, so a codeedit started while we shut
+ * down runs on its own instead of sending files to a dying window. */
+static void ipcUnregister(void)
+{
+    if (gIpcListen < 0) return;
+    Fl::remove_fd(gIpcListen);
+    close(gIpcListen);
+    gIpcListen = -1;
+    unlink(gIpcPath);
+}
+
+static void ipcRaise(void)
+{
+    XEvent e;
+    if (!gWin || !gWin->shown()) return;
+    gWin->show();                           /* shown already: de-iconify, raise */
+    memset(&e, 0, sizeof(e));
+    e.xclient.type         = ClientMessage;
+    e.xclient.window       = fl_xid(gWin);
+    e.xclient.message_type = XInternAtom(fl_display, "_NET_ACTIVE_WINDOW", False);
+    e.xclient.format       = 32;
+    e.xclient.data.l[0]    = 2;             /* source indication: pager */
+    e.xclient.data.l[1]    = CurrentTime;
+    XSendEvent(fl_display, RootWindow(fl_display, fl_screen), False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &e);
+    XFlush(fl_display);
+}
+
+static void ipcOpenQueued(void *)
+{
+    int k, n = gIpcCount;
+    gIpcCount = 0;
+    for (k = 0; k < n; k++) {
+        openOrShow(gIpcQueue[k]);
+        free(gIpcQueue[k]);
+    }
+    ipcRaise();
+}
+
+static void ipcConnRead(int fd, void *data)
+{
+    IpcConn *c = (IpcConn *)data;
+    char tmp[4096];
+    char *p, *nl;
+    ssize_t n = read(fd, tmp, sizeof(tmp));
+
+    if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
+        return;
+    if (n > 0 && c->len + (int)n <= CODE_IPC_MAXMSG) {
+        if (c->len + (int)n + 1 > c->cap) {
+            int cap = c->cap ? c->cap * 2 : 1024;
+            char *nb;
+            while (cap < c->len + (int)n + 1) cap *= 2;
+            nb = (char *)realloc(c->buf, (size_t)cap);
+            if (!nb) n = 0;                 /* out of memory: treat as the end */
+            else { c->buf = nb; c->cap = cap; }
+        }
+        if (n > 0) {
+            memcpy(c->buf + c->len, tmp, (size_t)n);
+            c->len += (int)n;
+            return;                         /* more may follow */
+        }
+    }
+
+    /* EOF, an error, or too much: take the complete lines, drop the link. */
+    Fl::remove_fd(fd);
+    close(fd);
+    if (c->buf) {
+        c->buf[c->len] = '\0';
+        for (p = c->buf; (nl = strchr(p, '\n')) != NULL; p = nl + 1) {
+            *nl = '\0';
+            if (*p && gIpcCount < CODE_IPC_MAXQ) {
+                char *q = (char *)malloc(strlen(p) + 1);
+                if (q) {
+                    strcpy(q, p);
+                    gIpcQueue[gIpcCount++] = q;
+                }
+            }
+        }
+        free(c->buf);
+    }
+    free(c);
+    Fl::remove_timeout(ipcOpenQueued);
+    Fl::add_timeout(0.0, ipcOpenQueued);
+}
+
+static void ipcAccept(int fd, void *)
+{
+    IpcConn *c;
+    int cfd = accept(fd, NULL, NULL);
+    if (cfd < 0) return;
+    fcntl(cfd, F_SETFD, FD_CLOEXEC);
+    fcntl(cfd, F_SETFL, fcntl(cfd, F_GETFL) | O_NONBLOCK);
+    c = (IpcConn *)calloc(1, sizeof(IpcConn));
+    if (!c) { close(cfd); return; }
+    Fl::add_fd(cfd, FL_READ, ipcConnRead, c);
+}
+
+/* First instance, once the window is up: start taking hand-offs. Anything
+ * that connected in between waits in the listen backlog until now. */
+static void ipcListen(void)
+{
+    if (gIpcListen >= 0) Fl::add_fd(gIpcListen, FL_READ, ipcAccept, 0);
+}
 #endif
 
 int main(int argc, char **argv)
 {
     int i;
 
-#ifdef _WIN32
     /* Before anything else: if codeedit is already running, give it our
      * files and leave (see "single instance" above). */
     if (ipcHandOff(argc, argv)) return 0;
-#endif
 
     /* First: DPI awareness must be declared before FLTK opens the display.
      * Widget font is 12 px at 96 DPI (FLTK default is 14), scaled for the
@@ -2469,16 +2700,12 @@ int main(int argc, char **argv)
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-trace") == 0) continue;
-#ifdef _WIN32
         {   /* full paths, the same form a second instance hands over, so the
              * "already open?" test in openOrShow() matches */
             char full[600];
             ipcFullPath(argv[i], full, (int)sizeof(full));
             addDoc(full);
         }
-#else
-        addDoc(argv[i]);
-#endif
     }
     if (gDocCount == 0) addDoc(0);
 
@@ -2528,6 +2755,8 @@ int main(int argc, char **argv)
      * Gives the comdlg32 Open / Save dialogs an owner, so they are modal to
      * us instead of to the desktop -- see edit_filedlg.h. */
     codeFileDlgSetOwner((void *)fl_xid(gWin));
+#else
+    ipcListen();
 #endif
     msg("codeedit: %d document(s) open\n", gDocCount);
     return Fl::run();
